@@ -1,24 +1,27 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import type { SVGAttributes } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { Bar, BarChart, LabelList, ResponsiveContainer } from 'recharts';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
+import * as monthUtils from '@actual-app/core/shared/months';
+import type { CashFlowWidget } from '@actual-app/core/types/models';
+import { Bar, BarChart, LabelList } from 'recharts';
 
-import { integerToCurrency } from 'loot-core/src/shared/util';
-import { type CashFlowWidget } from 'loot-core/src/types/models';
-
-import { theme } from '../../../style';
-import { View } from '../../common/View';
-import { PrivacyFilter } from '../../PrivacyFilter';
-import { Change } from '../Change';
-import { chartTheme } from '../chart-theme';
-import { Container } from '../Container';
-import { DateRange } from '../DateRange';
-import { LoadingIndicator } from '../LoadingIndicator';
-import { ReportCard } from '../ReportCard';
-import { ReportCardName } from '../ReportCardName';
-import { calculateTimeRange } from '../reportRanges';
-import { simpleCashFlow } from '../spreadsheets/cash-flow-spreadsheet';
-import { useReport } from '../useReport';
+import { FinancialText } from '#components/FinancialText';
+import { PrivacyFilter } from '#components/PrivacyFilter';
+import { Change } from '#components/reports/Change';
+import { useRechartsAnimation } from '#components/reports/chart-theme';
+import { Container } from '#components/reports/Container';
+import { DateRange } from '#components/reports/DateRange';
+import { LoadingIndicator } from '#components/reports/LoadingIndicator';
+import { ReportCard } from '#components/reports/ReportCard';
+import { ReportCardName } from '#components/reports/ReportCardName';
+import { calculateTimeRange } from '#components/reports/reportRanges';
+import { simpleCashFlow } from '#components/reports/spreadsheets/cash-flow-spreadsheet';
+import { useReport } from '#components/reports/useReport';
+import { useFormat } from '#hooks/useFormat';
 
 import { defaultTimeFrame } from './CashFlow';
 
@@ -41,6 +44,8 @@ function CustomLabel({
   width: barWidth = 0,
   height: barHeight = 0,
 }: CustomLabelProps) {
+  const format = useFormat();
+
   const valueLengthOffset = 20;
 
   const yOffset = barHeight < 25 ? 105 : y;
@@ -55,7 +60,10 @@ function CustomLabel({
     left: -valueLengthOffset + 2,
   };
 
-  const anchorValue = {
+  const anchorValue: {
+    right: SVGAttributes<SVGTextElement>['textAnchor'];
+    left: SVGAttributes<SVGTextElement>['textAnchor'];
+  } = {
     right: 'start',
     left: 'end',
   };
@@ -70,14 +78,15 @@ function CustomLabel({
       >
         {name}
       </text>
-      <text
+      <FinancialText
+        as="text"
         x={x + barWidth + valueXOffsets[position]}
         y={yOffset + 26}
         textAnchor={anchorValue[position]}
         fill={theme.tableText}
       >
-        <PrivacyFilter>{integerToCurrency(value)}</PrivacyFilter>
-      </text>
+        <PrivacyFilter>{format(value, 'financial')}</PrivacyFilter>
+      </FinancialText>
     </>
   );
 }
@@ -87,7 +96,6 @@ type CashFlowCardProps = {
   isEditing?: boolean;
   meta?: CashFlowWidget['meta'];
   onMetaChange: (newMeta: CashFlowWidget['meta']) => void;
-  onRemove: () => void;
 };
 
 export function CashFlowCard({
@@ -95,12 +103,27 @@ export function CashFlowCard({
   isEditing,
   meta = {},
   onMetaChange,
-  onRemove,
 }: CashFlowCardProps) {
   const { t } = useTranslation();
-
-  const [start, end] = calculateTimeRange(meta?.timeFrame, defaultTimeFrame);
+  const animationProps = useRechartsAnimation();
+  const [latestTransaction, setLatestTransaction] = useState<string>('');
   const [nameMenuOpen, setNameMenuOpen] = useState(false);
+
+  useEffect(() => {
+    async function fetchLatestTransaction() {
+      const latestTrans = await send('get-latest-transaction');
+      setLatestTransaction(
+        latestTrans ? latestTrans.date : monthUtils.currentDay(),
+      );
+    }
+    void fetchLatestTransaction();
+  }, []);
+
+  const [start, end] = calculateTimeRange(
+    meta?.timeFrame,
+    defaultTimeFrame,
+    latestTransaction,
+  );
 
   const params = useMemo(
     () => simpleCashFlow(start, end, meta?.conditions, meta?.conditionsOp),
@@ -118,31 +141,11 @@ export function CashFlowCard({
 
   return (
     <ReportCard
+      widgetId={widgetId}
       isEditing={isEditing}
       disableClick={nameMenuOpen}
       to={`/reports/cash-flow/${widgetId}`}
-      menuItems={[
-        {
-          name: 'rename',
-          text: t('Rename'),
-        },
-        {
-          name: 'remove',
-          text: t('Remove'),
-        },
-      ]}
-      onMenuSelect={item => {
-        switch (item) {
-          case 'rename':
-            setNameMenuOpen(true);
-            break;
-          case 'remove':
-            onRemove();
-            break;
-          default:
-            throw new Error(`Unrecognized selection: ${item}`);
-        }
-      }}
+      onRename={() => setNameMenuOpen(true)}
     >
       <View
         style={{ flex: 1 }}
@@ -177,46 +180,47 @@ export function CashFlowCard({
         {data ? (
           <Container style={{ height: 'auto', flex: 1 }}>
             {(width, height) => (
-              <ResponsiveContainer>
-                <BarChart
-                  width={width}
-                  height={height}
-                  data={[
-                    {
-                      income,
-                      expenses,
-                    },
-                  ]}
-                  margin={{
-                    top: 10,
-                    bottom: 0,
-                  }}
+              <BarChart
+                responsive
+                width={width}
+                height={height}
+                data={[
+                  {
+                    income,
+                    expenses,
+                  },
+                ]}
+                margin={{
+                  top: 10,
+                  bottom: 0,
+                }}
+              >
+                <Bar
+                  dataKey="income"
+                  fill={theme.reportsNumberPositive}
+                  barSize={14}
+                  {...animationProps}
                 >
-                  <Bar
+                  <LabelList
                     dataKey="income"
-                    fill={chartTheme.colors.blue}
-                    barSize={14}
-                  >
-                    <LabelList
-                      dataKey="income"
-                      position="left"
-                      content={<CustomLabel name={t('Income')} />}
-                    />
-                  </Bar>
+                    position="left"
+                    content={<CustomLabel name={t('Income')} />}
+                  />
+                </Bar>
 
-                  <Bar
+                <Bar
+                  dataKey="expenses"
+                  fill={theme.reportsNumberNegative}
+                  barSize={14}
+                  {...animationProps}
+                >
+                  <LabelList
                     dataKey="expenses"
-                    fill={chartTheme.colors.red}
-                    barSize={14}
-                  >
-                    <LabelList
-                      dataKey="expenses"
-                      position="right"
-                      content={<CustomLabel name={t('Expenses')} />}
-                    />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+                    position="right"
+                    content={<CustomLabel name={t('Expenses')} />}
+                  />
+                </Bar>
+              </BarChart>
             )}
           </Container>
         ) : (

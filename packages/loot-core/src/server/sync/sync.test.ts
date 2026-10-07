@@ -1,15 +1,22 @@
 // @ts-strict-ignore
 import { getClock, Timestamp } from '@actual-app/crdt';
 
-import * as db from '../db';
-import * as prefs from '../prefs';
-import * as sheet from '../sheet';
-import * as mockSyncServer from '../tests/mockSyncServer';
+import * as db from '#server/db';
+import * as prefs from '#server/prefs';
+import * as sheet from '#server/sheet';
+import * as mockSyncServer from '#server/tests/mockSyncServer';
+import { q } from '#shared/query';
 
 import * as encoder from './encoder';
 import { isError } from './utils';
 
-import { setSyncingMode, sendMessages, applyMessages, fullSync } from './index';
+import {
+  applyMessages,
+  fullSync,
+  receiveMessages,
+  sendMessages,
+  setSyncingMode,
+} from './index';
 
 beforeEach(() => {
   mockSyncServer.reset();
@@ -24,8 +31,8 @@ afterEach(() => {
 
 describe('Sync', () => {
   it('should send messages to the server', async () => {
-    prefs.loadPrefs();
-    prefs.savePrefs({ groupId: 'group' });
+    void prefs.loadPrefs();
+    void prefs.savePrefs({ groupId: 'group' });
 
     let timestamp = Timestamp.send();
     await sendMessages([
@@ -54,13 +61,17 @@ describe('Sync', () => {
     expect(getClock().timestamp.toString()).toEqual(timestamp.toString());
     expect(mockSyncServer.getClock().merkle).toEqual(getClock().merkle);
 
-    expect(await db.all('SELECT * FROM messages_crdt')).toMatchSnapshot();
-    expect(await db.all('SELECT * FROM messages_clock')).toMatchSnapshot();
+    expect(
+      await db.all<db.DbCrdtMessage>('SELECT * FROM messages_crdt'),
+    ).toMatchSnapshot();
+    expect(
+      await db.all<db.DbClockMessage>('SELECT * FROM messages_clock'),
+    ).toMatchSnapshot();
   });
 
   it('should resend old messages to the server', async () => {
-    prefs.loadPrefs();
-    prefs.savePrefs({ groupId: 'group' });
+    void prefs.loadPrefs();
+    void prefs.savePrefs({ groupId: 'group' });
 
     global.stepForwardInTime(Date.parse('2018-11-13T13:20:00.000Z'));
 
@@ -84,7 +95,9 @@ describe('Sync', () => {
     // Move the clock forward so that the above 2 messages are not
     // automatically sent out, but will need to be re-sent by way of
     // the merkle tree
-    prefs.savePrefs({ lastSyncedTimestamp: getClock().timestamp.toString() });
+    void prefs.savePrefs({
+      lastSyncedTimestamp: getClock().timestamp.toString(),
+    });
 
     expect(mockSyncServer.getMessages().length).toBe(0);
 
@@ -95,8 +108,8 @@ describe('Sync', () => {
   });
 
   it('should sync multiple clients', async () => {
-    prefs.loadPrefs();
-    prefs.savePrefs({
+    void prefs.loadPrefs();
+    void prefs.savePrefs({
       groupId: 'group',
       lastSyncedTimestamp: Timestamp.zero.toString(),
     });
@@ -144,9 +157,61 @@ describe('Sync', () => {
     expect(result.messages.length).toBe(2);
     expect(mockSyncServer.getMessages().length).toBe(3);
   });
+
+  it('should advance the clock once per received batch', async () => {
+    // `Date.now()` is frozen here, standing in for the 100ms rounding Firefox
+    // applies under resistFingerprinting. The counter only resets when
+    // `Date.now()` advances, so one tick per message overflowed its 16 bits
+    // once a sync carried more than 65535 of them.
+    const node = '0000testinguuid2';
+    const base = Date.parse('1970-01-02T00:00:00.000Z');
+
+    const messages = [];
+    for (let i = 0; i < 100; i++) {
+      messages.push({
+        dataset: 'transactions',
+        row: 'foo',
+        column: 'amount',
+        value: 'N:1',
+        timestamp: Timestamp.parse(
+          `${new Date(base + i).toISOString()}-0000-${node}`,
+        ),
+      });
+    }
+
+    await receiveMessages(messages);
+
+    expect(getClock().timestamp.counter()).toBe(0);
+
+    // The clock must still sort above every timestamp it received.
+    const latest = messages[messages.length - 1].timestamp.toString();
+    expect(getClock().timestamp.toString() > latest).toBe(true);
+  });
+
+  it('should reject a batch holding a far-future timestamp', () => {
+    // `toISOString` writes years above 9999 as `+010000-…`, which sorts below
+    // every normal timestamp. The batch maximum must not rank it last, which
+    // would let it skip the clock drift check.
+    const message = (millis: number) => ({
+      dataset: 'transactions',
+      row: 'foo',
+      column: 'amount',
+      value: 'N:1',
+      timestamp: Timestamp.parse(
+        `${new Date(millis).toISOString()}-0000-0000testinguuid2`,
+      ),
+    });
+
+    expect(() =>
+      receiveMessages([
+        message(Date.parse('1970-01-02T00:00:00.000Z')),
+        message(253402300800000),
+      ]),
+    ).toThrow(expect.objectContaining({ reason: 'clock-drift' }));
+  });
 });
 
-async function registerBudgetMonths(months) {
+function registerBudgetMonths(months) {
   const createdMonths = new Set();
   for (const month of months) {
     createdMonths.add(month);
@@ -155,8 +220,8 @@ async function registerBudgetMonths(months) {
 }
 
 async function asSecondClient(func) {
-  prefs.loadPrefs();
-  prefs.savePrefs({
+  void prefs.loadPrefs();
+  void prefs.savePrefs({
     groupId: 'group',
     lastSyncedTimestamp: Timestamp.zero.toString(),
   });
@@ -164,7 +229,7 @@ async function asSecondClient(func) {
   await func();
 
   await global.emptyDatabase()();
-  prefs.savePrefs({
+  void prefs.savePrefs({
     groupId: 'group',
     lastSyncedTimestamp: Timestamp.zero.toString(),
   });
@@ -319,7 +384,7 @@ describe('Sync projections', () => {
       groupId = await db.insertCategoryGroup({ id: 'group1', name: 'group1' });
       await db.insertCategoryGroup({ id: 'group2', name: 'group2' });
       fooId = await db.insertCategory({ name: 'foo', cat_group: 'group1' });
-      await db.moveCategory(fooId, 'group2');
+      await db.moveCategory(fooId, 'group2', null);
     });
 
     await sheet.loadSpreadsheet(db);
@@ -339,5 +404,53 @@ describe('Sync projections', () => {
 
     // Apply the messages that deletes it
     await applyMessages(secondMessages);
+  });
+});
+
+describe('Sync account balance cells', () => {
+  test('recomputes account totals and group subtotals when transactions sync', async () => {
+    void prefs.loadPrefs();
+    void prefs.savePrefs({ groupId: 'group' });
+    await sheet.loadSpreadsheet(db);
+
+    const spreadsheet = sheet.get();
+    function sumOf(filter: Record<string, unknown>) {
+      return q('transactions')
+        .filter(filter)
+        .calculate({ $sum: '$amount' })
+        .serialize();
+    }
+    spreadsheet.createQuery(
+      '__global',
+      'onbudget-accounts-balance',
+      sumOf({ 'account.offbudget': false }),
+    );
+    spreadsheet.createQuery(
+      '__global',
+      'account-group-balance-g1-on',
+      sumOf({ 'account.account_group_id': 'g1', 'account.offbudget': false }),
+    );
+    spreadsheet.createQuery(
+      '__global',
+      'balance-acct1',
+      sumOf({ account: 'acct1' }),
+    );
+    await sheet.waitOnSpreadsheet();
+
+    const recompute = vi.spyOn(spreadsheet, 'recompute');
+    await applyMessages([
+      global.stepForwardInTime() || {
+        dataset: 'transactions',
+        row: 'foo',
+        column: 'amount',
+        value: 3200,
+        timestamp: Timestamp.send(),
+      },
+    ]);
+
+    const recomputed = recompute.mock.calls.map(([name]) => name);
+    expect(recomputed).toContain('__global!onbudget-accounts-balance');
+    expect(recomputed).toContain('__global!account-group-balance-g1-on');
+    expect(recomputed).not.toContain('__global!balance-acct1');
   });
 });

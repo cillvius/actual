@@ -1,17 +1,11 @@
 // @ts-strict-ignore
-import { APIError } from '../../../server/errors';
-import { runHandler, isMutating } from '../../../server/mutators';
-import { captureException } from '../../exceptions';
+import { captureException } from '#platform/exceptions';
+import { logger } from '#platform/server/log';
+import { APIError } from '#server/errors';
+import { isMutating, runHandler } from '#server/mutators';
 
-import type * as T from '.';
-
-function coerceError(error) {
-  if (error.type && error.type === 'APIError') {
-    return error;
-  }
-
-  return { type: 'InternalError', message: error.message };
-}
+import { postErrorReply } from './errors';
+import type * as T from './index-types';
 
 export const init: T.Init = function (_socketName, handlers) {
   process.parentPort.on('message', ({ data }) => {
@@ -34,27 +28,13 @@ export const init: T.Init = function (_socketName, handlers) {
           });
         },
         nativeError => {
-          const error = coerceError(nativeError);
+          const error = postErrorReply(
+            message => process.parentPort.postMessage(message),
+            { id, name, catchErrors },
+            nativeError,
+          );
 
-          if (name.startsWith('api/')) {
-            // The API is newer and does automatically forward
-            // errors
-            process.parentPort.postMessage({
-              type: 'reply',
-              id,
-              error,
-            });
-          } else if (catchErrors) {
-            process.parentPort.postMessage({
-              type: 'reply',
-              id,
-              result: { error, data: null },
-            });
-          } else {
-            process.parentPort.postMessage({ type: 'error', id });
-          }
-
-          if (error.type === 'InternalError' && name !== 'api/load-budget') {
+          if (error.type === 'ServerError' && name !== 'api/load-budget') {
             captureException(nativeError);
           }
 
@@ -65,14 +45,23 @@ export const init: T.Init = function (_socketName, handlers) {
         },
       );
     } else {
-      console.warn('Unknown method: ' + name);
+      logger.error('Unknown server method: ' + name);
       captureException(new Error('Unknown server method: ' + name));
-      process.parentPort.postMessage({
-        type: 'reply',
-        id,
-        result: null,
-        error: APIError('Unknown method: ' + name),
-      });
+      const unknownMethodError = APIError('Unknown server method: ' + name);
+
+      if (catchErrors) {
+        process.parentPort.postMessage({
+          type: 'reply',
+          id,
+          result: { error: unknownMethodError, data: null },
+        });
+      } else {
+        process.parentPort.postMessage({
+          type: 'error',
+          id,
+          error: unknownMethodError,
+        });
+      }
     }
   });
 };
@@ -83,4 +72,8 @@ export const getNumClients: T.GetNumClients = function () {
 
 export const send: T.Send = function (name, args) {
   process.parentPort.postMessage({ type: 'push', name, args });
+};
+
+export const resetEvents: T.ResetEvents = function () {
+  // resetEvents is used in tests to mock the server
 };

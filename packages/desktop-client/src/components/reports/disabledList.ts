@@ -1,20 +1,25 @@
+import type { sortByOpType } from '@actual-app/core/types/models';
 import { t } from 'i18next';
 
 const intervalOptions = [
   {
     description: t('Daily'),
+    key: 'Daily',
     defaultRange: 'This month',
   },
   {
     description: t('Weekly'),
+    key: 'Weekly',
     defaultRange: 'Last 3 months',
   },
   {
     description: t('Monthly'),
+    key: 'Monthly',
     defaultRange: 'Last 6 months',
   },
   {
     description: t('Yearly'),
+    key: 'Yearly',
     defaultRange: 'Year to date',
   },
 ];
@@ -29,11 +34,31 @@ const currentIntervalOptions = [
     disableInclude: true,
   },
   {
+    description: t('Last month'),
+    disableInclude: true,
+  },
+  {
+    description: t('Current quarter'),
+    disableInclude: true,
+  },
+  {
+    description: t('Previous quarter'),
+    disableInclude: true,
+  },
+  {
+    description: t('Last 30 days'),
+    disableInclude: true,
+  },
+  {
     description: t('Year to date'),
     disableInclude: true,
   },
   {
     description: t('Last year'),
+    disableInclude: true,
+  },
+  {
+    description: t('Prior year to date'),
     disableInclude: true,
   },
   {
@@ -48,81 +73,89 @@ type graphOptions = {
   defaultSplit: string;
   disabledType: string[];
   defaultType: string;
-  defaultSort: string;
+  defaultSort: sortByOpType;
   disableLegend?: boolean;
   disableLabel?: boolean;
   disableSort?: boolean;
 };
+
 const totalGraphOptions: graphOptions[] = [
   {
     description: 'TableGraph',
-    disabledSplit: [],
+    // CategoryGroup is only valid for DonutGraph
+    disabledSplit: ['CategoryGroup'],
     defaultSplit: 'Category',
     disabledType: [],
     defaultType: 'Payment',
     disableLegend: true,
     disableLabel: true,
-    defaultSort: 'Budget',
+    defaultSort: 'budget',
   },
   {
     description: 'BarGraph',
-    disabledSplit: [],
+    // CategoryGroup is only valid for DonutGraph
+    disabledSplit: ['CategoryGroup'],
     defaultSplit: 'Category',
     disabledType: [],
     defaultType: 'Payment',
-    defaultSort: 'Descending',
+    defaultSort: 'desc',
   },
   {
     description: 'AreaGraph',
-    disabledSplit: ['Category', 'Group', 'Payee', 'Account'],
+    // CategoryGroup is only valid for DonutGraph
+    disabledSplit: ['Category', 'Group', 'CategoryGroup', 'Payee', 'Account'],
     defaultSplit: 'Interval',
     disabledType: [],
     defaultType: 'Payment',
     disableLegend: true,
     disableSort: true,
-    defaultSort: 'Descending',
+    defaultSort: 'desc',
   },
   {
     description: 'DonutGraph',
+    // CategoryGroup is allowed here — it enables the two-ring concentric donut
     disabledSplit: [],
     defaultSplit: 'Category',
     disabledType: ['Net'],
     defaultType: 'Payment',
-    defaultSort: 'Descending',
+    defaultSort: 'desc',
   },
 ];
 
 const timeGraphOptions: graphOptions[] = [
   {
     description: 'TableGraph',
-    disabledSplit: ['Interval'],
+    // CategoryGroup disabled in time mode (DonutGraph not available in time mode)
+    disabledSplit: ['Interval', 'CategoryGroup'],
     defaultSplit: 'Category',
     disabledType: ['Net Payment', 'Net Deposit'],
     defaultType: 'Payment',
     disableLegend: true,
     disableLabel: true,
     disableSort: true,
-    defaultSort: 'Descending',
+    defaultSort: 'desc',
   },
   {
     description: 'StackedBarGraph',
-    disabledSplit: ['Interval'],
+    // CategoryGroup disabled in time mode
+    disabledSplit: ['Interval', 'CategoryGroup'],
     defaultSplit: 'Category',
     disabledType: [],
     defaultType: 'Payment',
     disableSort: true,
-    defaultSort: 'Descending',
+    defaultSort: 'desc',
   },
   {
     description: 'LineGraph',
-    disabledSplit: ['Interval'],
+    // CategoryGroup disabled in time mode
+    disabledSplit: ['Interval', 'CategoryGroup'],
     defaultSplit: 'Category',
     disabledType: [],
     defaultType: 'Payment',
     disableLegend: false,
     disableLabel: true,
     disableSort: true,
-    defaultSort: 'Descending',
+    defaultSort: 'desc',
   },
 ];
 
@@ -213,6 +246,6 @@ export const defaultsList = {
     modeOptions.map(item => [item.description, item.defaultGraph]),
   ),
   intervalRange: new Map(
-    intervalOptions.map(item => [item.description, item.defaultRange]),
+    intervalOptions.map(item => [item.key, item.defaultRange]),
   ),
 };

@@ -1,11 +1,13 @@
-import { type Page } from '@playwright/test';
-
-import { amountToCurrency, currencyToAmount } from 'loot-core/shared/util';
-import * as monthUtils from 'loot-core/src/shared/months';
+import * as monthUtils from '@actual-app/core/shared/months';
+import {
+  amountToCurrency,
+  currencyToAmount,
+} from '@actual-app/core/shared/util';
+import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 import { ConfigurationPage } from './page-models/configuration-page';
-import { type MobileBudgetPage } from './page-models/mobile-budget-page';
+import type { MobileBudgetPage } from './page-models/mobile-budget-page';
 import { MobileNavigation } from './page-models/mobile-navigation';
 
 const copyLastMonthBudget = async (
@@ -44,6 +46,76 @@ const setToYearlyAverage = async (
   await budgetMenuModal.close();
 };
 
+function getAverageStartMonth(month: string) {
+  const previousMonth = monthUtils.prevMonth(month);
+
+  if (previousMonth >= monthUtils.currentMonth()) {
+    return monthUtils.prevMonth(monthUtils.currentMonth());
+  }
+
+  return previousMonth;
+}
+
+async function getAverageMonthAmounts(
+  budgetPage: MobileBudgetPage,
+  categoryName: string,
+  numberOfMonths: number,
+) {
+  const averageStartMonth = getAverageStartMonth(
+    await budgetPage.getSelectedMonth(),
+  );
+  const amounts: number[] = [];
+  let selectedMonth = await budgetPage.getSelectedMonth();
+  let navigatedMonths = 0;
+
+  while (selectedMonth > averageStartMonth) {
+    selectedMonth = await budgetPage.goToPreviousMonth();
+    navigatedMonths++;
+  }
+
+  for (let i = 0; i < numberOfMonths; i++) {
+    const spentButton = await budgetPage.getButtonForSpent(categoryName);
+    const spent = await spentButton.textContent();
+
+    if (!spent) {
+      throw new Error('Failed to get average month amounts');
+    }
+
+    amounts.push(currencyToAmount(spent) ?? 0);
+
+    if (i < numberOfMonths - 1) {
+      selectedMonth = await budgetPage.goToPreviousMonth();
+      navigatedMonths++;
+    }
+  }
+
+  for (let i = 0; i < navigatedMonths; i++) {
+    await budgetPage.goToNextMonth();
+  }
+
+  return amounts;
+}
+
+function getAverageSpent(amounts: number[]) {
+  let oldestActivityIndex = -1;
+
+  for (let i = 0; i < amounts.length; i++) {
+    if (amounts[i] !== 0) {
+      oldestActivityIndex = i;
+    }
+  }
+
+  const averageMonths =
+    oldestActivityIndex === -1
+      ? amounts
+      : amounts.slice(0, oldestActivityIndex + 1);
+  const totalSpent = averageMonths.reduce((sum, spentAmount) => {
+    return sum + spentAmount;
+  }, 0);
+
+  return Math.round((totalSpent / averageMonths.length) * 100) / 100;
+}
+
 async function setBudgetAverage(
   budgetPage: MobileBudgetPage,
   categoryName: string,
@@ -54,22 +126,9 @@ async function setBudgetAverage(
     numberOfMonths: number,
   ) => Promise<void>,
 ) {
-  let totalSpent = 0;
-
-  for (let i = 0; i < numberOfMonths; i++) {
-    await budgetPage.goToPreviousMonth();
-    const spentButton = await budgetPage.getButtonForSpent(categoryName);
-    const spent = await spentButton.textContent();
-    totalSpent += currencyToAmount(spent) ?? 0;
-  }
-
-  // Calculate average amount
-  const averageSpent = totalSpent / numberOfMonths;
-
-  // Go back to the current month
-  for (let i = 0; i < numberOfMonths; i++) {
-    await budgetPage.goToNextMonth();
-  }
+  const averageSpent = getAverageSpent(
+    await getAverageMonthAmounts(budgetPage, categoryName, numberOfMonths),
+  );
 
   await setBudgetAverageFn(budgetPage, categoryName, numberOfMonths);
 
@@ -219,13 +278,12 @@ budgetTypes.forEach(budgetType => {
       const budgetPage = await navigation.goToBudgetPage();
 
       const categoryGroupName = await budgetPage.getCategoryGroupNameForRow(0);
-      await budgetPage.openCategoryGroupMenu(categoryGroupName);
+      const categoryGroupMenuModal =
+        await budgetPage.openCategoryGroupMenu(categoryGroupName);
 
-      const categoryMenuModalHeading = page
-        .getByRole('dialog')
-        .getByRole('heading');
-
-      await expect(categoryMenuModalHeading).toHaveText(categoryGroupName);
+      await expect(categoryGroupMenuModal.heading).toHaveText(
+        categoryGroupName,
+      );
       await expect(page).toMatchThemeScreenshots();
     });
 
@@ -237,6 +295,41 @@ budgetTypes.forEach(budgetType => {
 
       await expect(categoryMenuModal.heading).toHaveText(categoryName);
       await expect(page).toMatchThemeScreenshots();
+    });
+
+    test('opens the transfer confirmation when deleting a category group with transactions', async () => {
+      const budgetPage = await navigation.goToBudgetPage();
+
+      const categoryGroupName = await budgetPage.getCategoryGroupNameForRow(0);
+      const categoryGroupMenuModal =
+        await budgetPage.openCategoryGroupMenu(categoryGroupName);
+
+      await categoryGroupMenuModal.delete();
+
+      const confirmDeleteModal = page.getByTestId(
+        'confirm-category-delete-modal',
+      );
+      await expect(confirmDeleteModal.getByRole('heading')).toHaveText(
+        'Confirm Delete',
+      );
+      await expect(confirmDeleteModal).toContainText('Transfer to:');
+    });
+
+    test('opens the transfer confirmation when deleting a category with transactions', async () => {
+      const budgetPage = await navigation.goToBudgetPage();
+
+      const categoryName = await budgetPage.getCategoryNameForRow(0);
+      const categoryMenuModal = await budgetPage.openCategoryMenu(categoryName);
+
+      await categoryMenuModal.delete();
+
+      const confirmDeleteModal = page.getByTestId(
+        'confirm-category-delete-modal',
+      );
+      await expect(confirmDeleteModal.getByRole('heading')).toHaveText(
+        'Confirm Delete',
+      );
+      await expect(confirmDeleteModal).toContainText('Transfer to:');
     });
 
     // Budgeted Cell Tests
@@ -280,6 +373,10 @@ budgetTypes.forEach(budgetType => {
 
       const lastMonthBudget = await budgetedButton.textContent();
 
+      if (!lastMonthBudget) {
+        throw new Error('Failed to get last month budget');
+      }
+
       await budgetPage.goToNextMonth();
 
       await copyLastMonthBudget(budgetPage, categoryName);
@@ -320,6 +417,13 @@ budgetTypes.forEach(budgetType => {
     test(`applies budget template`, async () => {
       const settingsPage = await navigation.goToSettingsPage();
       await settingsPage.enableExperimentalFeature('Goal templates');
+      const uiToggle = page.getByRole('checkbox', {
+        name: 'Budget automations UI',
+      });
+      await uiToggle.waitFor({ state: 'visible' });
+      if (!(await uiToggle.isChecked())) {
+        await uiToggle.click();
+      }
 
       const budgetPage = await navigation.goToBudgetPage();
 
@@ -328,10 +432,23 @@ budgetTypes.forEach(budgetType => {
       const amountToTemplate = 123;
 
       const categoryMenuModal = await budgetPage.openCategoryMenu(categoryName);
-      const editNotesModal = await categoryMenuModal.editNotes();
-      const templateNotes = `#template ${amountToTemplate}`;
-      await editNotesModal.updateNotes(templateNotes);
-      await editNotesModal.close();
+      const automationsModal = await categoryMenuModal.editAutomations();
+      await automationsModal
+        .getByRole('button', { name: 'Add an automation' })
+        .click();
+      const amountField = automationsModal.locator('#amount-field');
+      await amountField.fill(String(amountToTemplate));
+      await amountField.press('Enter');
+      await automationsModal
+        .getByRole('spinbutton', { name: 'Priority' })
+        .fill('0');
+      await automationsModal
+        .getByRole('button', { name: 'Back', exact: true })
+        .click();
+      await automationsModal
+        .getByRole('button', { name: 'Save', exact: true })
+        .click();
+      await expect(automationsModal).toBeHidden();
 
       const budgetedButton =
         await budgetPage.getButtonForBudgeted(categoryName);
@@ -343,8 +460,6 @@ budgetTypes.forEach(budgetType => {
       await expect(budgetedButton).toHaveText(
         amountToCurrency(amountToTemplate),
       );
-      const notification = page.getByRole('alert').first();
-      await expect(notification).toContainText(templateNotes);
       await expect(page).toMatchThemeScreenshots();
     });
 

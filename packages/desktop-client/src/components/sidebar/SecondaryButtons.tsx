@@ -1,6 +1,7 @@
-import React, { type ComponentType, type SVGProps } from 'react';
+import React from 'react';
+import type { ComponentType, SVGProps } from 'react';
 
-import { View } from '../common/View';
+import { View } from '@actual-app/components/view';
 
 import { SecondaryItem } from './SecondaryItem';
 
@@ -10,6 +11,7 @@ type SecondaryButtonItems = {
     | ComponentType<SVGProps<SVGElement>>
     | ComponentType<SVGProps<SVGSVGElement>>;
   onClick: () => void;
+  dataTestId?: string;
 };
 
 type SecondaryButtonsProps = {
@@ -30,6 +32,7 @@ export function SecondaryButtons({ buttons }: SecondaryButtonsProps) {
           title={item.title}
           Icon={item.Icon}
           onClick={item.onClick}
+          dataTestId={item.dataTestId}
         />
       ))}
     </View>

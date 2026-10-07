@@ -1,38 +1,37 @@
-import React, { useState, useEffect, useRef, type CSSProperties } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 
-import { closeBudget, getUserData, signOut } from 'loot-core/client/actions';
-import { listen } from 'loot-core/src/platform/client/fetch';
-import { type RemoteFile, type SyncedLocalFile } from 'loot-core/types/file';
-import { type TransObjectLiteral } from 'loot-core/types/util';
+import { Button } from '@actual-app/components/button';
+import { Menu } from '@actual-app/components/menu';
+import { Popover } from '@actual-app/components/popover';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { Tooltip } from '@actual-app/components/tooltip';
+import { View } from '@actual-app/components/view';
+import { listen } from '@actual-app/core/platform/client/connection';
+import type { RemoteFile, SyncedLocalFile } from '@actual-app/core/types/file';
+import type { TransObjectLiteral } from '@actual-app/core/types/util';
 
-import { useAuth } from '../auth/AuthProvider';
-import { Permissions } from '../auth/types';
-import { useMetadataPref } from '../hooks/useMetadataPref';
-import { useNavigate } from '../hooks/useNavigate';
-import { useSelector, useDispatch } from '../redux';
-import { theme, styles } from '../style';
+import { useAuth } from '#auth/AuthProvider';
+import { Permissions } from '#auth/types';
+import { closeBudget } from '#budgetfiles/budgetfilesSlice';
+import { useMetadataPref } from '#hooks/useMetadataPref';
+import { useNavigate } from '#hooks/useNavigate';
+import { useDispatch, useSelector } from '#redux';
+import { getUserData, signOut } from '#users/usersSlice';
 
-import { Button } from './common/Button2';
-import { Menu } from './common/Menu';
-import { Popover } from './common/Popover';
-import { Text } from './common/Text';
-import { View } from './common/View';
 import { PrivacyFilter } from './PrivacyFilter';
 import { useMultiuserEnabled, useServerURL } from './ServerContext';
 
 type LoggedInUserProps = {
   hideIfNoServer?: boolean;
   style?: CSSProperties;
-  color?: string;
 };
 
-export function LoggedInUser({
-  hideIfNoServer,
-  style,
-  color,
-}: LoggedInUserProps) {
+export function LoggedInUser({ hideIfNoServer, style }: LoggedInUserProps) {
   const { t } = useTranslation();
   const dispatch = useDispatch();
   const navigate = useNavigate();
@@ -46,14 +45,14 @@ export function LoggedInUser({
   const location = useLocation();
   const { hasPermission } = useAuth();
   const multiuserEnabled = useMultiuserEnabled();
-  const allFiles = useSelector(state => state.budgets.allFiles || []);
+  const allFiles = useSelector(state => state.budgetfiles.allFiles || []);
   const remoteFiles = allFiles.filter(
     f => f.state === 'remote' || f.state === 'synced' || f.state === 'detached',
   ) as (SyncedLocalFile | RemoteFile)[];
   const currentFile = remoteFiles.find(f => f.cloudFileId === cloudFileId);
   const hasSyncedPrefs = useSelector(state => state.prefs.synced);
 
-  const initializeUserData = async () => {
+  const initializeUserData = useCallback(async () => {
     try {
       await dispatch(getUserData());
     } catch (error) {
@@ -61,11 +60,11 @@ export function LoggedInUser({
     } finally {
       setLoading(false);
     }
-  };
+  }, [dispatch]);
 
   useEffect(() => {
-    initializeUserData();
-  }, []);
+    void initializeUserData();
+  }, [initializeUserData]);
 
   useEffect(() => {
     return listen('sync-event', ({ type }) => {
@@ -81,12 +80,12 @@ export function LoggedInUser({
           (type === 'error' && !userData.offline));
 
       if (shouldReinitialize) {
-        initializeUserData();
+        void initializeUserData();
       } else {
         setLoading(false);
       }
     });
-  }, [userData]);
+  }, [initializeUserData, userData]);
 
   async function onCloseBudget() {
     await dispatch(closeBudget());
@@ -94,7 +93,7 @@ export function LoggedInUser({
 
   async function onChangePassword() {
     await onCloseBudget();
-    navigate('/change-password');
+    void navigate('/change-password');
   }
 
   const handleMenuSelect = async (type: string) => {
@@ -102,43 +101,67 @@ export function LoggedInUser({
 
     switch (type) {
       case 'change-password':
-        onChangePassword();
+        void onChangePassword();
         break;
       case 'sign-in':
         await onCloseBudget();
-        navigate('/login');
+        void navigate('/login');
         break;
       case 'user-access':
-        navigate('/user-access');
+        void navigate('/user-access');
         break;
       case 'user-directory':
-        navigate('/user-directory');
+        void navigate('/user-directory');
         break;
       case 'index':
-        navigate('/');
+        void navigate('/');
         break;
       case 'sign-out':
-        dispatch(signOut());
+        void dispatch(signOut());
         break;
       case 'config-server':
         await onCloseBudget();
-        navigate('/config-server');
+        void navigate('/config-server');
         break;
       default:
         break;
     }
   };
 
-  function serverMessage() {
+  function getServerStatus() {
     if (!serverUrl) {
-      return t('No server');
+      return {
+        message: t('No server'),
+        tooltip: (
+          <Trans>
+            A server syncs your budget across devices and keeps a backup of your
+            data.
+            <br />
+            Click to set one up.
+          </Trans>
+        ),
+      };
     }
 
     if (userData?.offline) {
-      return t('Server offline');
+      return {
+        message: t('Server offline'),
+        tooltip: (
+          <Trans>
+            Can't reach your server right now.
+            <br />
+            Changes are saved locally and will sync once it's reachable again.
+          </Trans>
+        ),
+      };
     }
 
-    return t('Server online');
+    return {
+      message: t('Server online'),
+      tooltip: (
+        <Trans>Connected to your server — your budget is syncing.</Trans>
+      ),
+    };
   }
 
   if (hideIfNoServer && !serverUrl) return null;
@@ -217,16 +240,23 @@ export function LoggedInUser({
     return [...adminMenu, ...baseMenu];
   };
 
+  const serverStatus = getServerStatus();
+
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', ...style }}>
-      <Button
-        ref={triggerRef}
-        variant="bare"
-        onPress={() => setMenuOpen(true)}
-        style={{ color: color || 'inherit' }}
+      <Tooltip
+        placement="bottom end"
+        content={serverStatus.tooltip}
+        triggerProps={{ isDisabled: menuOpen }}
       >
-        {serverMessage()}
-      </Button>
+        <Button
+          ref={triggerRef}
+          variant="bare"
+          onPress={() => setMenuOpen(true)}
+        >
+          {serverStatus.message}
+        </Button>
+      </Tooltip>
       {!loading &&
         multiuserEnabled &&
         userData &&

@@ -1,9 +1,11 @@
-import React, { type UIEvent, useRef, type CSSProperties } from 'react';
+import React, { useRef } from 'react';
+import type { CSSProperties, UIEvent } from 'react';
 
-import { type DataEntity } from 'loot-core/src/types/models/reports';
-import { type RuleConditionEntity } from 'loot-core/types/models/rule';
-
-import { styles } from '../../style/styles';
+import { styles } from '@actual-app/components/styles';
+import type {
+  DataEntity,
+  RuleConditionEntity,
+} from '@actual-app/core/types/models';
 
 import { AreaGraph } from './graphs/AreaGraph';
 import { BarGraph } from './graphs/BarGraph';
@@ -28,6 +30,7 @@ type ChooseGraphProps = {
   style?: CSSProperties;
   showHiddenCategories?: boolean;
   showOffBudget?: boolean;
+  showTrendLines?: boolean;
   showTooltip?: boolean;
   intervalsCount: number;
 };
@@ -46,6 +49,7 @@ export function ChooseGraph({
   style,
   showHiddenCategories = false,
   showOffBudget = false,
+  showTrendLines = false,
   showTooltip = true,
   intervalsCount,
 }: ChooseGraphProps) {
@@ -159,6 +163,7 @@ export function ChooseGraph({
         balanceTypeOp={balanceTypeOp}
         showHiddenCategories={showHiddenCategories}
         showOffBudget={showOffBudget}
+        showTrendLines={showTrendLines}
         showTooltip={showTooltip}
         interval={interval}
       />

@@ -1,10 +1,12 @@
+import * as db from '#server/db';
+import * as sheet from '#server/sheet';
+import { resolveName } from '#server/spreadsheet/util';
 // @ts-strict-ignore
-import * as monthUtils from '../../shared/months';
-import { safeNumber } from '../../shared/util';
-import * as sheet from '../sheet';
-import { resolveName } from '../spreadsheet/util';
+import * as monthUtils from '#shared/months';
+import { safeNumber } from '#shared/util';
 
-import { number, sumAmounts, flatten2, unflatten2 } from './util';
+import { createCategory as createCategoryFromBase } from './base';
+import { flatten2, number, sumAmounts, unflatten2 } from './util';
 
 function getBlankSheet(months) {
   const blankMonth = monthUtils.prevMonth(months[0]);
@@ -71,15 +73,41 @@ export function createCategory(cat, sheetName, prevSheetName) {
   }
 }
 
+export function createCategoryGroup(group, sheetName) {
+  sheet.get().createDynamic(sheetName, 'group-sum-amount-' + group.id, {
+    initialValue: 0,
+    dependencies: group.categories.map(cat => `sum-amount-${cat.id}`),
+    run: sumAmounts,
+  });
+
+  if (!group.is_income) {
+    sheet.get().createDynamic(sheetName, 'group-budget-' + group.id, {
+      initialValue: 0,
+      dependencies: group.categories.map(cat => `budget-${cat.id}`),
+      run: sumAmounts,
+    });
+
+    sheet.get().createDynamic(sheetName, 'group-leftover-' + group.id, {
+      initialValue: 0,
+      dependencies: group.categories.map(cat => `leftover-${cat.id}`),
+      run: sumAmounts,
+    });
+  }
+}
+
 export function createSummary(groups, categories, prevSheetName, sheetName) {
   const incomeGroup = groups.filter(group => group.is_income)[0];
   const expenseCategories = categories.filter(cat => !cat.is_income);
+  const incomeCategories = categories.filter(cat => cat.is_income);
 
   sheet.get().createStatic(sheetName, 'buffered', 0);
 
   sheet.get().createDynamic(sheetName, 'from-last-month', {
     initialValue: 0,
-    dependencies: [`${prevSheetName}!to-budget`, `${prevSheetName}!buffered`],
+    dependencies: [
+      `${prevSheetName}!to-budget`,
+      `${prevSheetName}!buffered-selected`,
+    ],
     run: (toBudget, buffered) =>
       safeNumber(number(toBudget) + number(buffered)),
   });
@@ -131,6 +159,36 @@ export function createSummary(groups, categories, prevSheetName, sheetName) {
   });
 
   sheet.get().createDynamic(sheetName, 'buffered', { initialValue: 0 });
+  sheet.get().createDynamic(sheetName, 'buffered-auto', {
+    initialValue: 0,
+    dependencies: flatten2(
+      incomeCategories.map(c => [
+        `${sheetName}!sum-amount-${c.id}`,
+        `${sheetName}!carryover-${c.id}`,
+      ]),
+    ),
+    run: (...data) => {
+      data = unflatten2(data);
+      return safeNumber(
+        data.reduce((total, [sumAmount, carryover]) => {
+          if (carryover) {
+            return total + sumAmount;
+          }
+          return total;
+        }, 0),
+      );
+    },
+  });
+  sheet.get().createDynamic(sheetName, 'buffered-selected', {
+    initialValue: 0,
+    dependencies: [`${sheetName}!buffered`, `${sheetName}!buffered-auto`],
+    run: (man, auto) => {
+      if (man !== 0) {
+        return man;
+      }
+      return auto;
+    },
+  });
 
   sheet.get().createDynamic(sheetName, 'to-budget', {
     initialValue: 0,
@@ -138,7 +196,7 @@ export function createSummary(groups, categories, prevSheetName, sheetName) {
       'available-funds',
       'last-month-overspent',
       'total-budgeted',
-      'buffered',
+      'buffered-selected',
     ],
     run: (available, lastOverspent, totalBudgeted, buffered) => {
       return safeNumber(
@@ -176,5 +234,160 @@ export function createBudget(meta, categories, months) {
     sheet.get().clearSheet(meta.blankSheet);
     createBlankMonth(categories, blankSheet, months);
     meta.blankSheet = blankSheet;
+  }
+}
+
+export function handleCategoryChange(months, oldValue, newValue) {
+  // Build list of cells and dependencies that need updated
+  function getDeps(sheetName, prevSheetName, groupId, cat) {
+    const deps: Array<[string, string[]]> = [
+      [`group-sum-amount-${groupId}`, [`sum-amount-${cat.id}`]],
+      [`group-budget-${groupId}`, [`budget-${cat.id}`]],
+      [`group-leftover-${groupId}`, [`leftover-${cat.id}`]],
+    ];
+
+    if (cat.is_income) {
+      deps.push([
+        'buffered-auto',
+        [
+          `${sheetName}!sum-amount-${cat.id}`,
+          `${sheetName}!carryover-${cat.id}`,
+        ],
+      ]);
+    } else {
+      deps.push([
+        'last-month-overspent',
+        [
+          `${prevSheetName}!leftover-${cat.id}`,
+          `${prevSheetName}!carryover-${cat.id}`,
+        ],
+      ]);
+    }
+
+    return deps;
+  }
+
+  function addDeps(sheetName, prevSheetName, groupId, cat) {
+    getDeps(sheetName, prevSheetName, groupId, cat).forEach(
+      ([cellName, deps]) => {
+        sheet.get().addDependencies(sheetName, cellName, deps);
+      },
+    );
+  }
+
+  function removeDeps(sheetName, prevSheetName, groupId, cat) {
+    getDeps(sheetName, prevSheetName, groupId, cat).forEach(
+      ([cellName, deps]) => {
+        sheet.get().removeDependencies(sheetName, cellName, deps);
+      },
+    );
+  }
+
+  if (oldValue && oldValue.tombstone === 0 && newValue.tombstone === 1) {
+    months.forEach(month => {
+      const prevSheetName = monthUtils.sheetForMonth(
+        monthUtils.prevMonth(month),
+      );
+      const sheetName = monthUtils.sheetForMonth(month);
+
+      removeDeps(sheetName, prevSheetName, newValue.cat_group, newValue);
+    });
+  } else if (
+    newValue.tombstone === 0 &&
+    (!oldValue || oldValue.tombstone === 1)
+  ) {
+    createBlankCategory(newValue, months);
+
+    months.forEach(month => {
+      const prevMonth = monthUtils.prevMonth(month);
+      const prevSheetName = monthUtils.sheetForMonth(prevMonth);
+      const sheetName = monthUtils.sheetForMonth(month);
+      const { start, end } = monthUtils.bounds(month);
+
+      createCategoryFromBase(newValue, sheetName, prevSheetName, start, end);
+
+      addDeps(sheetName, prevSheetName, newValue.cat_group, newValue);
+    });
+  } else if (oldValue && oldValue.cat_group !== newValue.cat_group) {
+    // The category moved so we need to update the dependencies
+    months.forEach(month => {
+      const prevSheetName = monthUtils.sheetForMonth(
+        monthUtils.prevMonth(month),
+      );
+      const sheetName = monthUtils.sheetForMonth(month);
+
+      removeDeps(sheetName, prevSheetName, oldValue.cat_group, newValue);
+      addDeps(sheetName, prevSheetName, newValue.cat_group, newValue);
+    });
+  }
+}
+
+export function handleCategoryGroupChange(months, oldValue, newValue) {
+  function addDeps(sheetName, groupId) {
+    sheet
+      .get()
+      .addDependencies(sheetName, 'total-budgeted', [
+        `group-budget-${groupId}`,
+      ]);
+    sheet
+      .get()
+      .addDependencies(sheetName, 'total-spent', [
+        `group-sum-amount-${groupId}`,
+      ]);
+    sheet
+      .get()
+      .addDependencies(sheetName, 'total-leftover', [
+        `group-leftover-${groupId}`,
+      ]);
+  }
+
+  function removeDeps(sheetName, groupId) {
+    sheet
+      .get()
+      .removeDependencies(sheetName, 'total-budgeted', [
+        `group-budget-${groupId}`,
+      ]);
+    sheet
+      .get()
+      .removeDependencies(sheetName, 'total-spent', [
+        `group-sum-amount-${groupId}`,
+      ]);
+    sheet
+      .get()
+      .removeDependencies(sheetName, 'total-leftover', [
+        `group-leftover-${groupId}`,
+      ]);
+  }
+
+  if (newValue.tombstone === 1 && oldValue && oldValue.tombstone === 0) {
+    const id = newValue.id;
+    months.forEach(month => {
+      const sheetName = monthUtils.sheetForMonth(month);
+      removeDeps(sheetName, id);
+    });
+  } else if (
+    newValue.tombstone === 0 &&
+    (!oldValue || oldValue.tombstone === 1)
+  ) {
+    const group = newValue;
+
+    if (!group.is_income) {
+      months.forEach(month => {
+        const sheetName = monthUtils.sheetForMonth(month);
+
+        // Dirty, dirty hack. These functions should not be async, but this is
+        // OK because we're leveraging the sync nature of queries. Ideally we
+        // wouldn't be querying here. But I think we have to. At least for now
+        // we do
+        const categories = db.runQuery(
+          'SELECT * FROM categories WHERE tombstone = 0 AND cat_group = ?',
+          [group.id],
+          true,
+        );
+        createCategoryGroup({ ...group, categories }, sheetName);
+
+        addDeps(sheetName, group.id);
+      });
+    }
   }
 }

@@ -1,6 +1,7 @@
 import { rebuild } from '@electron/rebuild';
 import copyFiles from 'copyfiles';
-import { Arch, AfterPackContext } from 'electron-builder';
+import { Arch } from 'electron-builder';
+import type { AfterPackContext } from 'electron-builder';
 
 /* The beforePackHook runs before packing the Electron app for an architecture
 We hook in here to build anything architecture dependent - such as beter-sqlite3
@@ -13,20 +14,34 @@ const beforePackHook = async (context: AfterPackContext) => {
 
   if (!electronVersion) {
     console.error('beforePackHook: Unable to find electron version.');
-    process.exit(); // End the process - electron version is required
+    process.exit(1); // End the process - electron version is required
+  }
+
+  // gyp always compiles with CC_target/CXX_target when they are set, so they
+  // must only point at the cross-compiler while building for a foreign
+  // architecture — leaving them set would cross-compile the host-arch pass too.
+  if (process.platform === 'linux' && arch === 'arm64') {
+    process.env.CC_target = 'aarch64-linux-gnu-gcc';
+    process.env.CXX_target = 'aarch64-linux-gnu-g++';
+  } else {
+    delete process.env.CC_target;
+    delete process.env.CXX_target;
   }
 
   try {
+    // needed for better-sqlite3 because prebuilts are needed for each arch
+    process.env.npm_config_force_build = '1';
+
     await rebuild({
       arch,
       buildPath,
       electronVersion,
       force: true,
       projectRootPath,
-      onlyModules: ['better-sqlite3'],
+      onlyModules: ['better-sqlite3', 'bcrypt', 'argon2'],
     });
 
-    console.info(`Rebuilt better-sqlite3 with ${arch}!`);
+    console.info(`Rebuilt better-sqlite3, bcrypt, and argon2 with ${arch}!`);
 
     if (context.packager.platform.name === 'windows') {
       console.info(`Windows build - copying appx files...`);
@@ -39,9 +54,9 @@ const beforePackHook = async (context: AfterPackContext) => {
     }
   } catch (err) {
     console.error('beforePackHook:', err);
-    process.exit(); // End the process - unsuccessful build
+    process.exit(1); // End the process - unsuccessful build
   }
 };
 
-// eslint-disable-next-line import/no-default-export
+// oxlint-disable-next-line import/no-default-export
 export default beforePackHook;

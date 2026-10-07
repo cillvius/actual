@@ -1,4 +1,9 @@
 // @ts-strict-ignore
+import { formatDistanceToNow } from 'date-fns';
+import type { Locale } from 'date-fns';
+
+import { getDecimalPlaces } from './currencies';
+
 export function last<T>(arr: Array<T>) {
   return arr[arr.length - 1];
 }
@@ -45,7 +50,7 @@ export function hasFieldsChanged<T extends object>(
 export type Diff<T extends { id: string }> = {
   added: T[];
   updated: Partial<T>[];
-  deleted: Partial<T>[];
+  deleted: Pick<T, 'id'>[];
 };
 
 export function applyChanges<T extends { id: string }>(
@@ -129,9 +134,9 @@ export function diffItems<T extends { id: string }>(
   const added: T[] = [];
   const updated: Partial<T>[] = [];
 
-  const deleted: Partial<T>[] = items
+  const deleted: Pick<T, 'id'>[] = items
     .filter(item => !newGrouped.has(item.id))
-    .map(item => ({ id: item.id }) as Partial<T>);
+    .map(item => ({ id: item.id }));
 
   newItems.forEach(newItem => {
     const item = grouped.get(newItem.id);
@@ -149,8 +154,11 @@ export function diffItems<T extends { id: string }>(
 }
 
 export function groupById<T extends { id: string }>(
-  data: T[],
+  data: T[] | null | undefined,
 ): Record<string, T> {
+  if (!data) {
+    return {};
+  }
   const res: { [key: string]: T } = {};
   for (let i = 0; i < data.length; i++) {
     const item = data[i];
@@ -202,15 +210,44 @@ export function fastSetMerge<T>(set1: Set<T>, set2: Set<T>) {
   return finalSet;
 }
 
-export function titleFirst(str: string) {
+export function titleFirst(str: string | null | undefined) {
+  if (!str || str.length <= 1) {
+    return str?.toUpperCase() ?? '';
+  }
   return str[0].toUpperCase() + str.slice(1);
+}
+
+export function reapplyThousandSeparators(amountText: string) {
+  if (!amountText || typeof amountText !== 'string') {
+    return amountText;
+  }
+
+  const { decimalSeparator, thousandsSeparator, value } = getNumberFormat();
+  const [integerPartRaw, decimalPart = ''] = amountText.split(decimalSeparator);
+
+  // Apostrophe-dot: accept both U+2019 and keyboard U+0027 on input (see getNumberFormat formatter)
+  const stripThousands =
+    value === 'apostrophe-dot'
+      ? (s: string) => s.replaceAll(/[\u2019\u0027]/g, '')
+      : (s: string) => s.replaceAll(thousandsSeparator, '');
+  const numericValue = Number(stripThousands(integerPartRaw));
+  if (isNaN(numericValue)) {
+    return amountText; // Return original if parsing fails
+  }
+
+  const integerPart = numericValue
+    .toLocaleString('en-US')
+    .replaceAll(',', thousandsSeparator);
+  return decimalPart
+    ? integerPart + decimalSeparator + decimalPart
+    : integerPart;
 }
 
 export function appendDecimals(
   amountText: string,
   hideDecimals = false,
 ): string {
-  const { separator } = getNumberFormat();
+  const { decimalSeparator: separator } = getNumberFormat();
   let result = amountText;
   if (result.slice(-1) === separator) {
     result = result.slice(0, -1);
@@ -233,7 +270,7 @@ const NUMBER_FORMATS = [
   'comma-dot-in',
 ] as const;
 
-type NumberFormats = (typeof NUMBER_FORMATS)[number];
+export type NumberFormats = (typeof NUMBER_FORMATS)[number];
 
 function isNumberFormat(input: string = ''): input is NumberFormats {
   return (NUMBER_FORMATS as readonly string[]).includes(input);
@@ -246,8 +283,12 @@ export const numberFormats: Array<{
 }> = [
   { value: 'comma-dot', label: '1,000.33', labelNoFraction: '1,000' },
   { value: 'dot-comma', label: '1.000,33', labelNoFraction: '1.000' },
-  { value: 'space-comma', label: '1\xa0000,33', labelNoFraction: '1\xa0000' },
-  { value: 'apostrophe-dot', label: '1’000.33', labelNoFraction: '1’000' },
+  {
+    value: 'space-comma',
+    label: '1\u202F000,33',
+    labelNoFraction: '1\u202F000',
+  },
+  { value: 'apostrophe-dot', label: "1'000.33", labelNoFraction: "1'000" },
   { value: 'comma-dot-in', label: '1,00,000.33', labelNoFraction: '1,00,000' },
 ];
 
@@ -277,53 +318,84 @@ export function setNumberFormat(config: typeof numberFormatConfig) {
 }
 
 export function getNumberFormat({
-  format,
-  hideFraction,
+  format = numberFormatConfig.format,
+  hideFraction = numberFormatConfig.hideFraction,
+  decimalPlaces,
 }: {
   format?: NumberFormats;
-  hideFraction: boolean;
+  hideFraction?: boolean;
+  decimalPlaces?: number;
 } = numberFormatConfig) {
-  let locale, regex, separator, separatorRegex;
+  let locale, thousandsSeparator, decimalSeparator;
+
+  const currentFormat = format || numberFormatConfig.format;
+  const currentHideFraction =
+    typeof hideFraction === 'boolean'
+      ? hideFraction
+      : numberFormatConfig.hideFraction;
 
   switch (format) {
     case 'space-comma':
-      locale = 'en-SE';
-      regex = /[^-0-9,.]/g;
-      separator = ',';
-      separatorRegex = /[,.]/g;
+      locale = 'fr-FR';
+      thousandsSeparator = '\u202F';
+      decimalSeparator = ',';
       break;
     case 'dot-comma':
       locale = 'de-DE';
-      regex = /[^-0-9,]/g;
-      separator = ',';
+      thousandsSeparator = '.';
+      decimalSeparator = ',';
       break;
     case 'apostrophe-dot':
       locale = 'de-CH';
-      regex = /[^-0-9,.]/g;
-      separator = '.';
-      separatorRegex = /[,.]/g;
+      thousandsSeparator = '\u2019'; // Intl may return U+0027 (Node <24.13.1/ICU 77)
+      decimalSeparator = '.';
       break;
     case 'comma-dot-in':
       locale = 'en-IN';
-      regex = /[^-0-9.]/g;
-      separator = '.';
+      thousandsSeparator = ',';
+      decimalSeparator = '.';
       break;
     case 'comma-dot':
     default:
       locale = 'en-US';
-      regex = /[^-0-9.]/g;
-      separator = '.';
+      thousandsSeparator = ',';
+      decimalSeparator = '.';
   }
 
+  const fractionDigitsOptions: {
+    minimumFractionDigits: number;
+    maximumFractionDigits: number;
+  } =
+    typeof decimalPlaces === 'number'
+      ? {
+          minimumFractionDigits: decimalPlaces,
+          maximumFractionDigits: decimalPlaces,
+        }
+      : {
+          minimumFractionDigits: currentHideFraction ? 0 : 2,
+          maximumFractionDigits: currentHideFraction ? 0 : 2,
+        };
+
+  const intlFormatter = new Intl.NumberFormat(locale, fractionDigitsOptions);
+
+  // Wrapper to handle -0 edge case
+  // Normalize apostrophe-dot to U+2019 for consistency across
+  // Node/ICU versions (https://github.com/nodejs/node/issues/61861)
+  const formatter = {
+    format: (value: number) => {
+      let formatted = intlFormatter.format(value);
+      if (currentFormat === 'apostrophe-dot') {
+        formatted = formatted.replace(/'/g, '\u2019');
+      }
+      return formatted === '-0' ? '0' : formatted;
+    },
+  };
+
   return {
-    value: format,
-    separator,
-    formatter: new Intl.NumberFormat(locale, {
-      minimumFractionDigits: hideFraction ? 0 : 2,
-      maximumFractionDigits: hideFraction ? 0 : 2,
-    }),
-    regex,
-    separatorRegex,
+    value: currentFormat,
+    thousandsSeparator,
+    decimalSeparator,
+    formatter,
   };
 }
 
@@ -351,7 +423,7 @@ export type IntegerAmount = number;
 // because we always do that on numbers, the app would potentially
 // display wrong numbers. Instead of `2**53` we use `2**51` which
 // gives division more room to be correct
-const MAX_SAFE_NUMBER = 2 ** 51 - 1;
+export const MAX_SAFE_NUMBER = 2 ** 51 - 1;
 const MIN_SAFE_NUMBER = -MAX_SAFE_NUMBER;
 
 export function safeNumber(value: number) {
@@ -362,7 +434,7 @@ export function safeNumber(value: number) {
   }
   if (value > MAX_SAFE_NUMBER || value < MIN_SAFE_NUMBER) {
     throw new Error(
-      'safeNumber: can’t safely perform arithmetic with number: ' + value,
+      "safeNumber: can't safely perform arithmetic with number: " + value,
     );
   }
   return value;
@@ -375,8 +447,43 @@ export function toRelaxedNumber(currencyAmount: CurrencyAmount): Amount {
 export function integerToCurrency(
   integerAmount: IntegerAmount,
   formatter = getNumberFormat().formatter,
+  decimalPlaces: number = 2,
 ) {
-  return formatter.format(safeNumber(integerAmount) / 100);
+  const divisor = Math.pow(10, decimalPlaces);
+  const amount = safeNumber(integerAmount) / divisor;
+
+  return formatter.format(amount);
+}
+
+export function integerToCurrencyWithDecimal(
+  integerAmount: IntegerAmount,
+  currencyCode?: string,
+) {
+  if (currencyCode !== undefined) {
+    const dp = getDecimalPlaces(currencyCode);
+    return integerToCurrency(
+      integerAmount,
+      getNumberFormat({ ...numberFormatConfig, decimalPlaces: dp }).formatter,
+      dp,
+    );
+  }
+
+  // If decimal digits exist, keep them. Otherwise format them as usual.
+  if (integerAmount % 100 !== 0) {
+    return integerToCurrency(
+      integerAmount,
+      getNumberFormat({
+        ...numberFormatConfig,
+        hideFraction: false,
+      }).formatter,
+    );
+  }
+
+  return integerToCurrency(integerAmount);
+}
+
+export function amountToCurrencyInteger(amount: number, code: string): number {
+  return amountToInteger(amount, getDecimalPlaces(code));
 }
 
 export function amountToCurrency(amount: Amount): CurrencyAmount {
@@ -390,23 +497,27 @@ export function amountToCurrencyNoDecimal(amount: Amount): CurrencyAmount {
   }).formatter.format(amount);
 }
 
-export function currencyToAmount(
-  currencyAmount: CurrencyAmount,
-): Amount | null {
-  let amount;
-  if (getNumberFormat().separatorRegex) {
-    amount = parseFloat(
-      currencyAmount
-        .replace(getNumberFormat().regex, '')
-        .replace(getNumberFormat().separatorRegex, '.'),
-    );
+export function currencyToAmount(currencyAmount: string): Amount | null {
+  currencyAmount = currencyAmount.replace(/\u2212/g, '-');
+
+  let integer, fraction;
+
+  // match the last dot or comma in the string
+  const match = currencyAmount.match(/[,.](?=[^.,]*$)/);
+
+  if (
+    !match ||
+    (match[0] === getNumberFormat().thousandsSeparator &&
+      match.index + 4 <= currencyAmount.length)
+  ) {
+    fraction = null;
+    integer = currencyAmount.replace(/[^\d-]/g, '');
   } else {
-    amount = parseFloat(
-      currencyAmount
-        .replace(getNumberFormat().regex, '')
-        .replace(getNumberFormat().separator, '.'),
-    );
+    integer = currencyAmount.slice(0, match.index).replace(/[^\d-]/g, '');
+    fraction = currencyAmount.slice(match.index + 1);
   }
+
+  const amount = parseFloat(integer + '.' + fraction);
   return isNaN(amount) ? null : amount;
 }
 
@@ -418,19 +529,29 @@ export function currencyToInteger(
 }
 
 export function stringToInteger(str: string): number | null {
-  const amount = parseInt(str.replace(/[^-0-9.,]/g, ''));
+  const amount = parseInt(
+    str.replace(/\u2212/g, '-').replace(/[^-0-9.,]/g, ''),
+  );
   if (!isNaN(amount)) {
     return amount;
   }
   return null;
 }
 
-export function amountToInteger(amount: Amount): IntegerAmount {
-  return Math.round(amount * 100);
+export function amountToInteger(
+  amount: Amount,
+  decimalPlaces: number = 2,
+): IntegerAmount {
+  const multiplier = Math.pow(10, decimalPlaces);
+  return Math.round(amount * multiplier);
 }
 
-export function integerToAmount(integerAmount: IntegerAmount): Amount {
-  return parseFloat((safeNumber(integerAmount) / 100).toFixed(2));
+export function integerToAmount(
+  integerAmount: IntegerAmount,
+  decimalPlaces: number = 2,
+): Amount {
+  const divisor = Math.pow(10, decimalPlaces);
+  return integerAmount / divisor;
 }
 
 // This is used when the input format could be anything (from
@@ -455,8 +576,15 @@ export function looselyParseAmount(amount: string) {
     return v.replace(/[^0-9-]/g, '');
   }
 
+  amount = amount.trim();
+
   if (amount.startsWith('(') && amount.endsWith(')')) {
+    // Remove Unicode minus inside parentheses before converting to ASCII minus
+    amount = amount.replace(/\u2212/g, '');
     amount = amount.replace('(', '-').replace(')', '');
+  } else {
+    // Replace Unicode minus with ASCII minus for non-parenthesized amounts
+    amount = amount.replace(/\u2212/g, '-');
   }
 
   // Look for a decimal marker, then look for either 1-2 or 4-9 decimal places.
@@ -481,4 +609,43 @@ export function sortByKey<T>(arr: T[], key: keyof T): T[] {
     }
     return 0;
   });
+}
+
+// Date utilities
+
+export function tsToRelativeTime(
+  ts: string | null,
+  locale: Locale,
+  options: {
+    capitalize: boolean;
+  } = { capitalize: false },
+): string {
+  if (!ts) return 'Unknown';
+
+  const parsed = new Date(parseInt(ts, 10));
+
+  let distance = formatDistanceToNow(parsed, { addSuffix: true, locale });
+
+  if (options.capitalize) {
+    distance = distance.charAt(0).toUpperCase() + distance.slice(1);
+  }
+
+  return distance;
+}
+
+export function applyFindReplace(
+  text: string | null | undefined,
+  find: string,
+  replace: string,
+  useRegex: boolean,
+): string {
+  if (find === '') return text ?? '';
+  if (!text) return '';
+
+  try {
+    const pattern = useRegex ? new RegExp(find, 'g') : find;
+    return text.replaceAll(pattern, replace);
+  } catch {
+    return text;
+  }
 }

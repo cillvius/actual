@@ -1,7 +1,7 @@
-import { theme } from '../style';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
 import { Link } from './common/Link';
-import { View } from './common/View';
 
 export function DevelopmentTopBar() {
   return (
@@ -23,9 +23,9 @@ export function DevelopmentTopBar() {
         <Link
           variant="external"
           linkColor="purple"
-          to={`https://github.com/actualbudget/actual/pull/${process.env.REACT_APP_REVIEW_ID}`}
+          to={`https://github.com/actualbudget/actual/pull/${import.meta.env.REACT_APP_REVIEW_ID}`}
         >
-          Open the PR: #{process.env.REACT_APP_REVIEW_ID}
+          Open the PR: #{import.meta.env.REACT_APP_REVIEW_ID}
         </Link>
       </View>
     </View>

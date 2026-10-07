@@ -1,24 +1,22 @@
-import React, { type ComponentProps, useMemo } from 'react';
+import React, { useMemo } from 'react';
+import type { ComponentProps } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { amountToCurrency } from 'loot-core/src/shared/util';
-import { type CategoryEntity } from 'loot-core/types/models';
+import { SvgDownAndRightArrow } from '@actual-app/components/icons/v2';
+import { SpaceBetween } from '@actual-app/components/space-between';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { Tooltip } from '@actual-app/components/tooltip';
+import { View } from '@actual-app/components/view';
+import { amountToCurrency } from '@actual-app/core/shared/util';
+import type { CategoryEntity } from '@actual-app/core/types/models';
 
-import { SvgDownAndRightArrow } from '../../../icons/v2';
-import { theme, styles } from '../../../style';
-import { Stack } from '../../common/Stack';
-import { Tooltip } from '../../common/Tooltip';
-import { View } from '../../common/View';
-import { Checkbox } from '../../forms';
-import { Row, Field } from '../../table';
+import { Checkbox } from '#components/forms';
+import { Field, Row } from '#components/table';
 
 import { ParsedDate } from './ParsedDate';
-import {
-  applyFieldMappings,
-  type FieldMapping,
-  formatDate,
-  type ImportTransaction,
-  parseAmountFields,
-} from './utils';
+import { applyFieldMappings, formatDate, parseAmountFields } from './utils';
+import type { FieldMapping, ImportTransaction } from './utils';
 
 type TransactionProps = {
   transaction: ImportTransaction;
@@ -28,12 +26,13 @@ type TransactionProps = {
   dateFormat: ComponentProps<typeof ParsedDate>['dateFormat'];
   splitMode: boolean;
   inOutMode: boolean;
-  outValue: number;
+  outValue: string;
   flipAmount: boolean;
   multiplierAmount: string;
   categories: CategoryEntity[];
   onCheckTransaction: (transactionId: string) => void;
   reconcile: boolean;
+  index: number;
 };
 
 export function Transaction({
@@ -50,7 +49,10 @@ export function Transaction({
   categories,
   onCheckTransaction,
   reconcile,
+  index,
 }: TransactionProps) {
+  const { t } = useTranslation();
+
   const categoryList = categories.map(category => category.name);
   const transaction = useMemo(
     () =>
@@ -92,10 +94,15 @@ export function Transaction({
   return (
     <Row
       style={{
-        backgroundColor: theme.tableBackground,
+        backgroundColor:
+          index % 2 === 0
+            ? theme.tableBackground
+            : theme.tableRowBackgroundAlternate,
+        textDecoration: transaction.tombstone ? 'line-through' : 'none',
         color:
           (transaction.isMatchedTransaction && !transaction.selected_merge) ||
-          !transaction.selected
+          !transaction.selected ||
+          transaction.tombstone
             ? theme.tableTextInactive
             : theme.tableText,
       }}
@@ -105,18 +112,24 @@ export function Transaction({
           {!transaction.isMatchedTransaction && (
             <Tooltip
               content={
-                !transaction.existing && !transaction.ignored
-                  ? 'New transaction. You can import it, or skip it.'
-                  : transaction.ignored
-                    ? 'Already imported transaction. You can skip it, or import it again.'
-                    : transaction.existing
-                      ? 'Updated transaction. You can update it, import it again, or skip it.'
-                      : ''
+                transaction.tombstone
+                  ? t('This transaction will be deleted by Rules')
+                  : !transaction.existing && !transaction.ignored
+                    ? t('New transaction. You can import it, or skip it.')
+                    : transaction.ignored
+                      ? t(
+                          'Already imported transaction. You can skip it, or import it again.',
+                        )
+                      : transaction.existing
+                        ? t(
+                            'Updated transaction. You can update it, import it again, or skip it.',
+                          )
+                        : ''
               }
               placement="right top"
             >
               <Checkbox
-                checked={transaction.selected}
+                checked={transaction.selected && !transaction.tombstone}
                 onChange={() => onCheckTransaction(transaction.trx_id)}
                 style={
                   transaction.selected_merge
@@ -126,41 +139,48 @@ export function Transaction({
                             background:
                               theme.checkboxBackgroundSelected +
                               // update sign from packages/desktop-client/src/icons/v1/layer.svg
-                              // eslint-disable-next-line rulesdir/typography
+
                               ' url(\'data:image/svg+xml; utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="white" d="M10 1l10 6-10 6L0 7l10-6zm6.67 10L20 13l-10 6-10-6 3.33-2L10 15l6.67-4z" /></svg>\') 9px 9px',
                           },
                         },
                       }
-                    : {
-                        '&': {
-                          border:
-                            '1px solid ' + theme.buttonNormalDisabledBorder,
-                          backgroundColor: theme.buttonNormalDisabledBorder,
-                          '::after': {
-                            display: 'block',
-                            background:
-                              theme.buttonNormalDisabledBorder +
-                              // minus sign adapted from packages/desktop-client/src/icons/v1/add.svg
-                              // eslint-disable-next-line rulesdir/typography
-                              ' url(\'data:image/svg+xml; utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="white" className="path" d="M23,11.5 L23,11.5 L23,11.5 C23,12.3284271 22.3284271,13 21.5,13 L1.5,13 L1.5,13 C0.671572875,13 1.01453063e-16,12.3284271 0,11.5 L0,11.5 L0,11.5 C-1.01453063e-16,10.6715729 0.671572875,10 1.5,10 L21.5,10 L21.5,10 C22.3284271,10 23,10.6715729 23,11.5 Z" /></svg>\') 9px 9px',
-                            width: 9,
-                            height: 9,
-                            // eslint-disable-next-line rulesdir/typography
-                            content: '" "',
+                    : transaction.tombstone
+                      ? {
+                          '&': {
+                            opacity: 0.3,
+                            backgroundColor: theme.buttonNormalDisabledBorder,
                           },
-                        },
-                        ':checked': {
-                          border: '1px solid ' + theme.checkboxBorderSelected,
-                          backgroundColor: theme.checkboxBackgroundSelected,
-                          '::after': {
-                            background:
-                              theme.checkboxBackgroundSelected +
-                              // plus sign from packages/desktop-client/src/icons/v1/add.svg
-                              // eslint-disable-next-line rulesdir/typography
-                              ' url(\'data:image/svg+xml; utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="white" className="path" d="M23,11.5 L23,11.5 L23,11.5 C23,12.3284271 22.3284271,13 21.5,13 L1.5,13 L1.5,13 C0.671572875,13 1.01453063e-16,12.3284271 0,11.5 L0,11.5 L0,11.5 C-1.01453063e-16,10.6715729 0.671572875,10 1.5,10 L21.5,10 L21.5,10 C22.3284271,10 23,10.6715729 23,11.5 Z" /><path fill="white" className="path" d="M11.5,23 C10.6715729,23 10,22.3284271 10,21.5 L10,1.5 C10,0.671572875 10.6715729,1.52179594e-16 11.5,0 C12.3284271,-1.52179594e-16 13,0.671572875 13,1.5 L13,21.5 C13,22.3284271 12.3284271,23 11.5,23 Z" /></svg>\') 9px 9px',
+                        }
+                      : {
+                          '&': {
+                            border:
+                              '1px solid ' + theme.buttonNormalDisabledBorder,
+                            backgroundColor: theme.buttonNormalDisabledBorder,
+                            '::after': {
+                              display: 'block',
+                              background:
+                                theme.buttonNormalDisabledBorder +
+                                // minus sign adapted from packages/desktop-client/src/icons/v1/add.svg
+
+                                ' url(\'data:image/svg+xml; utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="white" className="path" d="M23,11.5 L23,11.5 L23,11.5 C23,12.3284271 22.3284271,13 21.5,13 L1.5,13 L1.5,13 C0.671572875,13 1.01453063e-16,12.3284271 0,11.5 L0,11.5 L0,11.5 C-1.01453063e-16,10.6715729 0.671572875,10 1.5,10 L21.5,10 L21.5,10 C22.3284271,10 23,10.6715729 23,11.5 Z" /></svg>\') 9px 9px',
+                              width: 9,
+                              height: 9,
+
+                              content: '" "',
+                            },
                           },
-                        },
-                      }
+                          ':checked': {
+                            border: '1px solid ' + theme.checkboxBorderSelected,
+                            backgroundColor: theme.checkboxBackgroundSelected,
+                            '::after': {
+                              background:
+                                theme.checkboxBackgroundSelected +
+                                // plus sign from packages/desktop-client/src/icons/v1/add.svg
+
+                                ' url(\'data:image/svg+xml; utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="white" className="path" d="M23,11.5 L23,11.5 L23,11.5 C23,12.3284271 22.3284271,13 21.5,13 L1.5,13 L1.5,13 C0.671572875,13 1.01453063e-16,12.3284271 0,11.5 L0,11.5 L0,11.5 C-1.01453063e-16,10.6715729 0.671572875,10 1.5,10 L21.5,10 L21.5,10 C22.3284271,10 23,10.6715729 23,11.5 Z" /><path fill="white" className="path" d="M11.5,23 C10.6715729,23 10,22.3284271 10,21.5 L10,1.5 C10,0.671572875 10.6715729,1.52179594e-16 11.5,0 C12.3284271,-1.52179594e-16 13,0.671572875 13,1.5 L13,21.5 C13,22.3284271 12.3284271,23 11.5,23 Z" /></svg>\') 9px 9px',
+                            },
+                          },
+                        }
                 }
               />
             </Tooltip>
@@ -170,12 +190,12 @@ export function Transaction({
       <Field width={200}>
         {transaction.isMatchedTransaction ? (
           <View>
-            <Stack direction="row" align="flex-start">
+            <SpaceBetween style={{ alignItems: 'flex-start' }}>
               <View>
                 <SvgDownAndRightArrow width={16} height={16} />
               </View>
-              <View>{formatDate(transaction.date, dateFormat)}</View>
-            </Stack>
+              <View>{formatDate(transaction.date ?? null, dateFormat)}</View>
+            </SpaceBetween>
           </View>
         ) : showParsed ? (
           <ParsedDate
@@ -184,7 +204,7 @@ export function Transaction({
             date={transaction.date}
           />
         ) : (
-          formatDate(transaction.date, dateFormat)
+          formatDate(transaction.date ?? null, dateFormat)
         )}
       </Field>
       <Field
@@ -199,13 +219,28 @@ export function Transaction({
       <Field
         width="flex"
         title={
-          categoryList.includes(transaction.category)
+          transaction.category && categoryList.includes(transaction.category)
             ? transaction.category
             : undefined
         }
       >
-        {categoryList.includes(transaction.category) && transaction.category}
+        {transaction.category &&
+          categoryList.includes(transaction.category) &&
+          transaction.category}
       </Field>
+      {inOutMode && (
+        <Field
+          width={90}
+          contentStyle={{ textAlign: 'left', ...styles.tnum }}
+          title={
+            transaction.inOut === undefined
+              ? undefined
+              : String(transaction.inOut)
+          }
+        >
+          {transaction.inOut}
+        </Field>
+      )}
       {splitMode ? (
         <>
           <Field
@@ -219,7 +254,7 @@ export function Transaction({
             }}
             title={
               outflow === null
-                ? 'Invalid: unable to parse the value'
+                ? t('Invalid: unable to parse the value')
                 : amountToCurrency(outflow)
             }
           >
@@ -236,7 +271,7 @@ export function Transaction({
             }}
             title={
               inflow === null
-                ? 'Invalid: unable to parse the value'
+                ? t('Invalid: unable to parse the value')
                 : amountToCurrency(inflow)
             }
           >
@@ -244,36 +279,23 @@ export function Transaction({
           </Field>
         </>
       ) : (
-        <>
-          {inOutMode && (
-            <Field
-              width={90}
-              contentStyle={{ textAlign: 'left', ...styles.tnum }}
-              title={
-                transaction.inOut === undefined
-                  ? undefined
-                  : String(transaction.inOut)
-              }
-            >
-              {transaction.inOut}
-            </Field>
-          )}
-          <Field
-            width={90}
-            contentStyle={{
-              textAlign: 'right',
-              ...styles.tnum,
-              ...(amount === null ? { color: theme.errorText } : {}),
-            }}
-            title={
-              amount === null
-                ? `Invalid: unable to parse the value (${transaction.amount})`
-                : amountToCurrency(amount)
-            }
-          >
-            {amountToCurrency(amount || 0)}
-          </Field>
-        </>
+        <Field
+          width={90}
+          contentStyle={{
+            textAlign: 'right',
+            ...styles.tnum,
+            ...(amount === null ? { color: theme.errorText } : {}),
+          }}
+          title={
+            amount === null
+              ? t('Invalid: unable to parse the value ({{amount}})', {
+                  amount: transaction.amount,
+                })
+              : amountToCurrency(amount)
+          }
+        >
+          {amountToCurrency(amount || 0)}
+        </Field>
       )}
     </Row>
   );

@@ -1,60 +1,71 @@
+import { send } from '@actual-app/core/platform/client/connection';
+import * as monthUtils from '@actual-app/core/shared/months';
+import type {
+  AccountEntity,
+  balanceTypeOpType,
+  CategoryEntity,
+  CategoryGroupEntity,
+  CustomReportTagScope,
+  DataEntity,
+  GroupedEntity,
+  IntervalEntity,
+  PayeeEntity,
+  RuleConditionEntity,
+  sortByOpType,
+  TagEntity,
+} from '@actual-app/core/types/models';
+import type { SyncedPrefs } from '@actual-app/core/types/prefs';
 import * as d from 'date-fns';
-
-import { runQuery } from 'loot-core/src/client/query-helpers';
-import { type useSpreadsheet } from 'loot-core/src/client/SpreadsheetProvider';
-import { send } from 'loot-core/src/platform/client/fetch';
-import * as monthUtils from 'loot-core/src/shared/months';
-import { integerToAmount } from 'loot-core/src/shared/util';
-import {
-  type AccountEntity,
-  type PayeeEntity,
-  type CategoryEntity,
-  type RuleConditionEntity,
-  type CategoryGroupEntity,
-} from 'loot-core/src/types/models';
-import {
-  type balanceTypeOpType,
-  type sortByOpType,
-  type DataEntity,
-  type GroupedEntity,
-  type IntervalEntity,
-} from 'loot-core/src/types/models/reports';
-import { type SyncedPrefs } from 'loot-core/types/prefs';
 
 import {
   categoryLists,
+  getIntervalFormat,
   groupBySelections,
-  type QueryDataEntity,
   ReportOptions,
-  type UncategorizedEntity,
-} from '../ReportOptions';
+} from '#components/reports/ReportOptions';
+import type { QueryDataEntity } from '#components/reports/ReportOptions';
+import { resolveTagScope } from '#components/reports/tagScope';
+import type { useSpreadsheet } from '#hooks/useSpreadsheet';
 
 import { calculateLegend } from './calculateLegend';
+import { fetchSpreadsheetQueryData } from './fetchSpreadsheetQueryData';
 import { filterEmptyRows } from './filterEmptyRows';
-import { filterHiddenItems } from './filterHiddenItems';
-import { makeQuery } from './makeQuery';
+import {
+  filterHiddenItems,
+  filterReportTransactions,
+} from './filterHiddenItems';
 import { recalculate } from './recalculate';
 import { sortData } from './sortData';
+import { groupQueryDataByTags } from './tagGroups';
+import {
+  determineIntervalRange,
+  trimIntervalDataToRange,
+  trimIntervalsToRange,
+} from './trimIntervals';
 
 export type createCustomSpreadsheetProps = {
   startDate: string;
   endDate: string;
   interval: string;
   categories: { list: CategoryEntity[]; grouped: CategoryGroupEntity[] };
+  budgetType?: SyncedPrefs['budgetType'];
   conditions: RuleConditionEntity[];
   conditionsOp: string;
   showEmpty: boolean;
   showOffBudget: boolean;
   showHiddenCategories: boolean;
   showUncategorized: boolean;
+  trimIntervals: boolean;
   groupBy?: string;
   balanceTypeOp?: balanceTypeOpType;
   sortByOp?: sortByOpType;
   payees?: PayeeEntity[];
   accounts?: AccountEntity[];
+  tags?: TagEntity[];
+  tagScope?: CustomReportTagScope;
   graphType?: string;
   firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx'];
-  setDataCheck?: (value: boolean) => void;
+  dateFormat?: SyncedPrefs['dateFormat'];
 };
 
 export function createCustomSpreadsheet({
@@ -62,33 +73,56 @@ export function createCustomSpreadsheet({
   endDate,
   interval,
   categories,
+  budgetType = 'envelope',
   conditions = [],
   conditionsOp,
   showEmpty,
   showOffBudget,
   showHiddenCategories,
   showUncategorized,
+  trimIntervals,
   groupBy = '',
   balanceTypeOp = 'totalDebts',
   sortByOp = 'desc',
   payees = [],
   accounts = [],
+  tags = [],
+  tagScope,
   graphType,
   firstDayOfWeekIdx,
-  setDataCheck,
+  dateFormat,
 }: createCustomSpreadsheetProps) {
   const [categoryList, categoryGroup] = categoryLists(categories);
-
-  const [groupByList, groupByLabel]: [
-    groupByList: UncategorizedEntity[],
-    groupByLabel: 'category' | 'categoryGroup' | 'payee' | 'account',
-  ] = groupBySelections(groupBy, categoryList, categoryGroup, payees, accounts);
+  const [initialGroups, groupByLabel] = groupBySelections(
+    groupBy,
+    categoryList,
+    categoryGroup,
+    payees,
+    accounts,
+  );
 
   return async (
     spreadsheet: ReturnType<typeof useSpreadsheet>,
     setData: (data: DataEntity) => void,
   ) => {
-    if (groupByList.length === 0) {
+    let groupByList = initialGroups;
+    let scopeTagNames: string[] | undefined;
+    const emptyData: DataEntity = {
+      data: [],
+      intervalData: [],
+      legend: [],
+      startDate,
+      endDate,
+      totalAssets: 0,
+      totalDebts: 0,
+      netAssets: 0,
+      netDebts: 0,
+      totalTotals: 0,
+      totalBudgeted: 0,
+    };
+
+    if (groupBy !== 'Tag' && groupByList.length === 0) {
+      setData(emptyData);
       return;
     }
 
@@ -99,30 +133,52 @@ export function createCustomSpreadsheet({
 
     let assets: QueryDataEntity[];
     let debts: QueryDataEntity[];
-    [assets, debts] = await Promise.all([
-      runQuery(
-        makeQuery(
-          'assets',
-          startDate,
-          endDate,
-          interval,
-          conditionsOpKey,
-          filters,
-        ),
-      ).then(({ data }) => data),
-      runQuery(
-        makeQuery(
-          'debts',
-          startDate,
-          endDate,
-          interval,
-          conditionsOpKey,
-          filters,
-        ),
-      ).then(({ data }) => data),
-    ]);
 
-    if (interval === 'Weekly') {
+    ({ assets, debts } = await fetchSpreadsheetQueryData({
+      balanceTypeOp,
+      startDate,
+      endDate,
+      interval,
+      categories: categories.list,
+      categoryGroups: categories.grouped,
+      conditions,
+      conditionsOp,
+      conditionsOpKey,
+      filters,
+      budgetType,
+      groupBy,
+    }));
+
+    if (groupBy === 'Tag') {
+      const resolvedScope = resolveTagScope(tags, tagScope);
+      scopeTagNames = resolvedScope.map(tag => tag.tag);
+      const groupedQueryData = groupQueryDataByTags({
+        assets: filterReportTransactions(
+          assets,
+          showOffBudget,
+          showHiddenCategories,
+          showUncategorized,
+        ),
+        debts: filterReportTransactions(
+          debts,
+          showOffBudget,
+          showHiddenCategories,
+          showUncategorized,
+        ),
+        tags: resolvedScope,
+        showEmpty,
+      });
+      assets = groupedQueryData.assets;
+      debts = groupedQueryData.debts;
+      groupByList = groupedQueryData.groups;
+    }
+
+    if (groupByList.length === 0) {
+      setData(emptyData);
+      return;
+    }
+
+    if (interval === 'Weekly' && balanceTypeOp !== 'totalBudgeted') {
       debts = debts.map(d => {
         return {
           ...d,
@@ -151,6 +207,7 @@ export function createCustomSpreadsheet({
 
     const groupsByCategory =
       groupByLabel === 'category' || groupByLabel === 'categoryGroup';
+
     const intervalData = intervals.reduce(
       (arr: IntervalEntity[], intervalItem, index) => {
         let perIntervalAssets = 0;
@@ -177,7 +234,7 @@ export function createCustomSpreadsheet({
                 (asset[groupByLabel] === (item.id ?? null) ||
                   (item.uncategorized_id && groupsByCategory)),
             )
-            .reduce((a, v) => (a = a + v.amount), 0);
+            .reduce((a, v) => a + v.amount, 0);
           perIntervalAssets += intervalAssets;
 
           const intervalDebts = filterHiddenItems(
@@ -194,7 +251,7 @@ export function createCustomSpreadsheet({
                 (debt[groupByLabel] === (item.id ?? null) ||
                   (item.uncategorized_id && groupsByCategory)),
             )
-            .reduce((a, v) => (a = a + v.amount), 0);
+            .reduce((a, v) => a + v.amount, 0);
           perIntervalDebts += intervalDebts;
 
           const netAmounts = intervalAssets + intervalDebts;
@@ -211,25 +268,22 @@ export function createCustomSpreadsheet({
           if (balanceTypeOp === 'netDebts') {
             stackAmounts = netAmounts < 0 ? Math.abs(netAmounts) : 0;
           }
-          if (balanceTypeOp === 'totalTotals') {
+          if (
+            balanceTypeOp === 'totalTotals' ||
+            balanceTypeOp === 'totalBudgeted'
+          ) {
             stackAmounts += netAmounts;
           }
-          if (stackAmounts !== 0) {
-            stacked[item.name] = integerToAmount(stackAmounts);
-          }
 
-          perIntervalNetAssets =
-            netAmounts > 0
-              ? perIntervalNetAssets + netAmounts
-              : perIntervalNetAssets;
-          perIntervalNetDebts =
-            netAmounts < 0
-              ? perIntervalNetDebts + netAmounts
-              : perIntervalNetDebts;
+          // Use id as key to prevent collisions when categories have the same name
+          stacked[item.id || item.name] = stackAmounts;
+
           perIntervalTotals += netAmounts;
 
           return null;
         });
+        perIntervalNetAssets = perIntervalTotals > 0 ? perIntervalTotals : 0;
+        perIntervalNetDebts = perIntervalTotals < 0 ? perIntervalTotals : 0;
         totalAssets += perIntervalAssets;
         totalDebts += perIntervalDebts;
         netAssets += perIntervalNetAssets;
@@ -238,7 +292,7 @@ export function createCustomSpreadsheet({
         arr.push({
           date: d.format(
             d.parseISO(intervalItem),
-            ReportOptions.intervalFormat.get(interval) || '',
+            getIntervalFormat(interval, dateFormat),
           ),
           ...stacked,
           intervalStartDate: index === 0 ? startDate : intervalItem,
@@ -246,11 +300,14 @@ export function createCustomSpreadsheet({
             index + 1 === intervals.length
               ? endDate
               : monthUtils.subDays(intervals[index + 1], 1),
-          totalAssets: integerToAmount(perIntervalAssets),
-          totalDebts: integerToAmount(perIntervalDebts),
-          netAssets: integerToAmount(perIntervalNetAssets),
-          netDebts: integerToAmount(perIntervalNetDebts),
-          totalTotals: integerToAmount(perIntervalTotals),
+          totalAssets: perIntervalAssets,
+          totalDebts: perIntervalDebts,
+          netAssets: perIntervalNetAssets,
+          netDebts: perIntervalNetDebts,
+          // `totalBudgeted` intentionally mirrors `totalTotals`; the difference is
+          // the underlying dataset when `balanceTypeOp === 'totalBudgeted'`.
+          totalTotals: perIntervalTotals,
+          totalBudgeted: perIntervalTotals,
         });
 
         return arr;
@@ -273,16 +330,36 @@ export function createCustomSpreadsheet({
       });
       return { ...calc };
     });
+
+    // First, filter rows so trimming reflects the visible dataset
     const calcDataFiltered = calcData.filter(i =>
       filterEmptyRows({ showEmpty, data: i, balanceTypeOp }),
     );
+
+    // Determine interval range across filtered groups and main intervalData
+    const { startIndex, endIndex } = determineIntervalRange(
+      calcDataFiltered,
+      intervalData,
+      trimIntervals,
+      balanceTypeOp,
+    );
+
+    // Trim only if enabled
+    const trimmedIntervalData = trimIntervals
+      ? trimIntervalDataToRange(intervalData, startIndex, endIndex)
+      : intervalData;
+
+    if (trimIntervals) {
+      // Keep group data in sync with the trimmed range
+      trimIntervalsToRange(calcDataFiltered, startIndex, endIndex);
+    }
 
     const sortedCalcDataFiltered = [...calcDataFiltered].sort(
       sortData({ balanceTypeOp, sortByOp }),
     );
 
     const legend = calculateLegend(
-      intervalData,
+      trimmedIntervalData,
       sortedCalcDataFiltered,
       groupBy,
       graphType,
@@ -291,16 +368,19 @@ export function createCustomSpreadsheet({
 
     setData({
       data: sortedCalcDataFiltered,
-      intervalData,
+      intervalData: trimmedIntervalData,
       legend,
       startDate,
       endDate,
-      totalAssets: integerToAmount(totalAssets),
-      totalDebts: integerToAmount(totalDebts),
-      netAssets: integerToAmount(netAssets),
-      netDebts: integerToAmount(netDebts),
-      totalTotals: integerToAmount(totalAssets + totalDebts),
+      totalAssets,
+      totalDebts,
+      netAssets,
+      netDebts,
+      // `totalBudgeted` intentionally mirrors `totalTotals`; the difference is
+      // the underlying dataset when `balanceTypeOp === 'totalBudgeted'`.
+      totalTotals: totalAssets + totalDebts,
+      totalBudgeted: totalAssets + totalDebts,
+      scopeTagNames,
     });
-    setDataCheck?.(true);
   };
 }

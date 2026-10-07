@@ -1,9 +1,9 @@
 import { useCallback } from 'react';
 
-import { saveSyncedPrefs } from 'loot-core/client/actions';
-import { type SyncedPrefs } from 'loot-core/src/types/prefs';
+import type { SyncedPrefs } from '@actual-app/core/types/prefs';
 
-import { useSelector, useDispatch } from '../redux';
+import { saveSyncedPrefs } from '#prefs/prefsSlice';
+import { useDispatch, useSelector } from '#redux';
 
 type SetSyncedPrefsAction = (value: Partial<SyncedPrefs>) => void;
 
@@ -12,7 +12,7 @@ export function useSyncedPrefs(): [SyncedPrefs, SetSyncedPrefsAction] {
   const dispatch = useDispatch();
   const setPrefs = useCallback<SetSyncedPrefsAction>(
     newValue => {
-      dispatch(saveSyncedPrefs(newValue));
+      void dispatch(saveSyncedPrefs({ prefs: newValue }));
     },
     [dispatch],
   );

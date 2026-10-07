@@ -1,18 +1,7 @@
-import { useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
-import { getAccounts } from 'loot-core/client/queries/queriesSlice';
-
-import { useSelector, useDispatch } from '../redux';
+import { accountQueries } from '#accounts';
 
 export function useAccounts() {
-  const dispatch = useDispatch();
-  const accountsLoaded = useSelector(state => state.queries.accountsLoaded);
-
-  useEffect(() => {
-    if (!accountsLoaded) {
-      dispatch(getAccounts());
-    }
-  }, []);
-
-  return useSelector(state => state.queries.accounts);
+  return useQuery(accountQueries.list());
 }

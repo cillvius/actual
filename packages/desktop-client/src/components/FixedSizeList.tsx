@@ -1,17 +1,9 @@
 // @ts-strict-ignore
-import {
-  createRef,
-  PureComponent,
-  type ReactNode,
-  type Ref,
-  type MutableRefObject,
-  type UIEvent,
-  type CSSProperties,
-} from 'react';
+import { createRef, PureComponent } from 'react';
+import type { CSSProperties, ReactNode, Ref, RefObject, UIEvent } from 'react';
 
-import memoizeOne from 'memoize-one';
-
-import { View } from './common/View';
+import { View } from '@actual-app/components/view';
+import { memoizeOne } from '@actual-app/core/shared/memoize';
 
 const IS_SCROLLING_DEBOUNCE_INTERVAL = 150;
 
@@ -33,7 +25,7 @@ type FixedSizeListProps = {
   headerHeight?: number;
   initialScrollOffset?: number;
   itemCount?: number;
-  outerRef?: MutableRefObject<HTMLDivElement>;
+  outerRef?: RefObject<HTMLDivElement>;
   itemSize?: number;
   onItemsRendered?: (config: {
     overscanStartIndex: number;
@@ -67,8 +59,8 @@ export class FixedSizeList extends PureComponent<
 > {
   _outerRef: HTMLDivElement;
   _resetIsScrollingTimeoutId = null;
-  lastPositions: MutableRefObject<Map<string | number, number>>;
-  needsAnimationRerender: MutableRefObject<boolean>;
+  lastPositions: RefObject<Map<string | number, number>>;
+  needsAnimationRerender: RefObject<boolean>;
   animationEnabled: boolean;
   requestScrollUpdateHandled: boolean;
   anchored: null | {
@@ -142,8 +134,7 @@ export class FixedSizeList extends PureComponent<
     const { initialScrollOffset } = this.props;
 
     if (typeof initialScrollOffset === 'number' && this._outerRef != null) {
-      let outerRef = this._outerRef;
-      outerRef = this._outerRef;
+      const outerRef = this._outerRef;
       outerRef.scrollTop = initialScrollOffset;
     }
 
@@ -478,7 +469,6 @@ export class FixedSizeList extends PureComponent<
     return style;
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _getItemStyleCache = memoizeOne((_, __, ___) => ({}));
 
   _getRangeToRender() {

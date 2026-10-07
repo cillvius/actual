@@ -1,4 +1,5 @@
-import * as fs from '../platform/server/fs';
+import * as fs from '#platform/server/fs';
+import { logger } from '#platform/server/log';
 
 type ServerConfig = {
   BASE_SERVER: string;
@@ -6,6 +7,9 @@ type ServerConfig = {
   SIGNUP_SERVER: string;
   GOCARDLESS_SERVER: string;
   SIMPLEFIN_SERVER: string;
+  PLUGGYAI_SERVER: string;
+  AKAHU_SERVER: string;
+  ENABLEBANKING_SERVER: string;
 };
 
 let config: ServerConfig | null = null;
@@ -19,7 +23,7 @@ function joinURL(base: string | URL, ...paths: string[]): string {
 export function isValidBaseURL(base: string): boolean {
   try {
     return Boolean(new URL(base));
-  } catch (error) {
+  } catch {
     return false;
   }
 }
@@ -42,9 +46,12 @@ export function getServer(url?: string): ServerConfig | null {
         SIGNUP_SERVER: joinURL(url, '/account'),
         GOCARDLESS_SERVER: joinURL(url, '/gocardless'),
         SIMPLEFIN_SERVER: joinURL(url, '/simplefin'),
+        PLUGGYAI_SERVER: joinURL(url, '/pluggyai'),
+        AKAHU_SERVER: joinURL(url, '/akahu'),
+        ENABLEBANKING_SERVER: joinURL(url, '/enablebanking'),
       };
     } catch (error) {
-      console.warn(
+      logger.warn(
         'Unable to parse server URL - using the global config.',
         { config },
         error,

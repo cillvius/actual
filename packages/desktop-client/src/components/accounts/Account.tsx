@@ -1,96 +1,99 @@
 import React, {
-  PureComponent,
-  type MutableRefObject,
   createRef,
-  useMemo,
-  type ReactElement,
+  PureComponent,
+  startTransition,
   useEffect,
+  useMemo,
 } from 'react';
+import type { ReactElement, RefObject } from 'react';
+import { ErrorBoundary } from 'react-error-boundary';
 import { Trans } from 'react-i18next';
-import { Navigate, useParams, useLocation } from 'react-router-dom';
+import { Navigate, useLocation, useParams } from 'react-router';
 
-import { debounce } from 'debounce';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { listen, send } from '@actual-app/core/platform/client/connection';
+import * as undo from '@actual-app/core/platform/client/undo';
+import type { UndoState } from '@actual-app/core/server/undo';
+import { q } from '@actual-app/core/shared/query';
+import type { Query } from '@actual-app/core/shared/query';
+import {
+  makeAsNonChildTransactions,
+  makeChild,
+  ungroupTransaction,
+  ungroupTransactions,
+} from '@actual-app/core/shared/transactions';
+import type { IntegerAmount } from '@actual-app/core/shared/util';
+import type {
+  AccountEntity,
+  CategoryGroupEntity,
+  NewRuleEntity,
+  PayeeEntity,
+  RuleActionEntity,
+  RuleConditionEntity,
+  TransactionEntity,
+  TransactionFilterEntity,
+} from '@actual-app/core/types/models';
+import { debounce, isEqual } from 'es-toolkit/compat';
 import { t } from 'i18next';
 import { v4 as uuidv4 } from 'uuid';
 
-import { unlinkAccount } from 'loot-core/client/accounts/accountsSlice';
 import {
-  addNotification,
-  openAccountCloseModal,
-  pushModal,
-  replaceModal,
-} from 'loot-core/client/actions';
-import { syncAndDownload } from 'loot-core/client/app/appSlice';
-import {
-  createPayee,
-  initiallyLoadPayees,
-  markAccountRead,
-  reopenAccount,
-  updateAccount,
-  updateNewTransactions,
-} from 'loot-core/client/queries/queriesSlice';
-import { type AppDispatch } from 'loot-core/client/store';
-import { validForTransfer } from 'loot-core/client/transfer';
-import { type UndoState } from 'loot-core/server/undo';
-import { useFilters } from 'loot-core/src/client/data-hooks/filters';
-import {
-  SchedulesProvider,
-  accountSchedulesQuery,
-} from 'loot-core/src/client/data-hooks/schedules';
-import * as queries from 'loot-core/src/client/queries';
-import {
-  runQuery,
-  pagedQuery,
-  type PagedQuery,
-} from 'loot-core/src/client/query-helpers';
-import { send, listen } from 'loot-core/src/platform/client/fetch';
-import * as undo from 'loot-core/src/platform/client/undo';
-import { currentDay } from 'loot-core/src/shared/months';
-import { q, type Query } from 'loot-core/src/shared/query';
-import {
-  updateTransaction,
-  realizeTempTransactions,
-  ungroupTransaction,
-  ungroupTransactions,
-  makeChild,
-  makeAsNonChildTransactions,
-} from 'loot-core/src/shared/transactions';
-import { applyChanges, groupById } from 'loot-core/src/shared/util';
-import {
-  type NewRuleEntity,
-  type RuleActionEntity,
-  type AccountEntity,
-  type RuleConditionEntity,
-  type TransactionEntity,
-  type TransactionFilterEntity,
-} from 'loot-core/src/types/models';
-
-import { useAccountPreviewTransactions } from '../../hooks/useAccountPreviewTransactions';
-import { useAccounts } from '../../hooks/useAccounts';
-import { useCategories } from '../../hooks/useCategories';
-import { useDateFormat } from '../../hooks/useDateFormat';
-import { useFailedAccounts } from '../../hooks/useFailedAccounts';
-import { useLocalPref } from '../../hooks/useLocalPref';
-import { usePayees } from '../../hooks/usePayees';
-import {
-  SelectedProviderWithItems,
-  type Actions,
-} from '../../hooks/useSelected';
+  useReopenAccountMutation,
+  useSyncAndDownloadMutation,
+  useUnlinkAccountMutation,
+  useUpdateAccountMutation,
+} from '#accounts';
+import { markAccountRead } from '#accounts/accountsSlice';
+import * as reconciliation from '#accounts/reconciliation';
+import { FeatureErrorFallback } from '#components/FeatureErrorFallback';
+import type { SavedFilter } from '#components/filters/SavedFilterMenuButton';
+import type {
+  TransactionTableColumn,
+  TransactionTableColumnId,
+} from '#components/transactions/table/columns';
+import { TransactionList } from '#components/transactions/TransactionList';
+import { validateAccountName } from '#components/util/accountValidation';
+import { useAccountPreviewTransactions } from '#hooks/useAccountPreviewTransactions';
+import { useAccounts } from '#hooks/useAccounts';
+import { SchedulesProvider } from '#hooks/useCachedSchedules';
+import { useCategories } from '#hooks/useCategories';
+import { useDateFormat } from '#hooks/useDateFormat';
+import { useLocalPref } from '#hooks/useLocalPref';
+import { usePayees } from '#hooks/usePayees';
+import { getSchedulesQuery } from '#hooks/useSchedules';
+import { SelectedProviderWithItems } from '#hooks/useSelected';
+import type { Actions } from '#hooks/useSelected';
 import {
   SplitsExpandedProvider,
   useSplitsExpanded,
-} from '../../hooks/useSplitsExpanded';
-import { useSyncedPref } from '../../hooks/useSyncedPref';
-import { useTransactionBatchActions } from '../../hooks/useTransactionBatchActions';
-import { useSelector, useDispatch } from '../../redux';
-import { styles, theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { type SavedFilter } from '../filters/SavedFilterMenuButton';
-import { TransactionList } from '../transactions/TransactionList';
-import { validateAccountName } from '../util/accountValidation';
+} from '#hooks/useSplitsExpanded';
+import { useSyncedPref } from '#hooks/useSyncedPref';
+import { useTransactionBatchActions } from '#hooks/useTransactionBatchActions';
+import { useTransactionFilters } from '#hooks/useTransactionFilters';
+import { calculateRunningBalancesBottomUp } from '#hooks/useTransactions';
+import {
+  SPECIAL_VIEW_IDS,
+  useTransactionTableColumns,
+} from '#hooks/useTransactionTableColumns';
+import {
+  openAccountCloseModal,
+  pushModal,
+  replaceModal,
+} from '#modals/modalsSlice';
+import type { ConfirmTransactionEditReason } from '#modals/modalsSlice';
+import { addNotification } from '#notifications/notificationsSlice';
+import { useCreatePayeeMutation } from '#payees';
+import * as queries from '#queries';
+import { aqlQuery } from '#queries/aqlQuery';
+import { pagedQuery } from '#queries/pagedQuery';
+import type { PagedQuery } from '#queries/pagedQuery';
+import { useDispatch, useSelector } from '#redux';
+import type { AppDispatch } from '#redux/store';
+import { updateNewTransactions } from '#transactions/transactionsSlice';
 
+import { AccountEmptyMessage } from './AccountEmptyMessage';
 import { AccountHeader } from './Header';
 
 type ConditionEntity = Partial<RuleConditionEntity> | TransactionFilterEntity;
@@ -101,66 +104,15 @@ function isTransactionFilterEntity(
   return 'id' in filter;
 }
 
-type EmptyMessageProps = {
-  onAdd: () => void;
-};
-
-function EmptyMessage({ onAdd }: EmptyMessageProps) {
-  return (
-    <View
-      style={{
-        color: theme.tableText,
-        backgroundColor: theme.tableBackground,
-        flex: 1,
-        alignItems: 'center',
-        borderTopWidth: 1,
-        borderColor: theme.tableBorder,
-      }}
-    >
-      <View
-        style={{
-          width: 550,
-          marginTop: 75,
-          fontSize: 15,
-          alignItems: 'center',
-        }}
-      >
-        <Text style={{ textAlign: 'center', lineHeight: '1.4em' }}>
-          <Trans>
-            For Actual to be useful, you need to <strong>add an account</strong>
-            . You can link an account to automatically download transactions, or
-            manage it locally yourself.
-          </Trans>
-        </Text>
-
-        <Button
-          variant="primary"
-          style={{ marginTop: 20 }}
-          autoFocus
-          onPress={onAdd}
-        >
-          <Trans>Add account</Trans>
-        </Button>
-
-        <View
-          style={{ marginTop: 20, fontSize: 13, color: theme.tableTextLight }}
-        >
-          <Trans>In the future, you can add accounts from the sidebar.</Trans>
-        </View>
-      </View>
-    </View>
-  );
-}
-
 type AllTransactionsProps = {
   account?: AccountEntity | undefined;
   transactions: TransactionEntity[];
-  balances: Record<string, { balance: number }> | null;
+  balances: Record<TransactionEntity['id'], IntegerAmount> | null;
   showBalances?: boolean | undefined;
   filtered?: boolean | undefined;
   children: (
     transactions: TransactionEntity[],
-    balances: Record<string, { balance: number }> | null,
+    balances: Record<TransactionEntity['id'], IntegerAmount> | null,
   ) => ReactElement;
 };
 
@@ -192,13 +144,13 @@ function AllTransactions({
 
   transactions ??= [];
 
-  let runningBalance = useMemo(() => {
+  const runningBalance = useMemo(() => {
     if (!showBalances) {
       return 0;
     }
 
     return balances && transactions?.length > 0
-      ? (balances[transactions[0].id]?.balance ?? 0)
+      ? (balances[transactions[0].id] ?? 0)
       : 0;
   }, [showBalances, balances, transactions]);
 
@@ -207,18 +159,13 @@ function AllTransactions({
       return null;
     }
 
-    // Reverse so we can calculate from earliest upcoming schedule.
-    const previewBalances = [...previewTransactions]
-      .reverse()
-      .map(previewTransaction => {
-        return {
-          // TODO: fix me
-          // eslint-disable-next-line react-hooks/exhaustive-deps
-          balance: (runningBalance += previewTransaction.amount),
-          id: previewTransaction.id,
-        };
-      });
-    return groupById(previewBalances);
+    return Object.fromEntries(
+      calculateRunningBalancesBottomUp(
+        previewTransactions,
+        'all',
+        runningBalance,
+      ),
+    );
   }, [showBalances, previewTransactions, runningBalance]);
 
   const allTransactions = useMemo(() => {
@@ -273,13 +220,17 @@ type AccountInternalProps = {
     | undefined;
   filterConditions: RuleConditionEntity[];
   showBalances?: boolean;
-  setShowBalances: (newValue: boolean) => void;
+  showNetWorthChart: boolean;
+  setShowNetWorthChart: (newValue: boolean) => void;
   showCleared?: boolean;
-  setShowCleared: (newValue: boolean) => void;
   showReconciled: boolean;
   setShowReconciled: (newValue: boolean) => void;
+  showGroup: boolean;
   showExtraBalances?: boolean;
   setShowExtraBalances: (newValue: boolean) => void;
+  transactionColumns: TransactionTableColumn[];
+  columnOrder: TransactionTableColumnId[];
+  saveColumns: (columns: TransactionTableColumn[], applyToAll: boolean) => void;
   modalShowing?: boolean;
   accounts: AccountEntity[];
   newTransactions: Array<TransactionEntity['id']>;
@@ -300,14 +251,20 @@ type AccountInternalProps = {
   onBatchDelete: ReturnType<typeof useTransactionBatchActions>['onBatchDelete'];
   categoryId?: string;
   location: ReturnType<typeof useLocation>;
-  failedAccounts: ReturnType<typeof useFailedAccounts>;
   dateFormat: ReturnType<typeof useDateFormat>;
-  payees: ReturnType<typeof usePayees>;
-  categoryGroups: ReturnType<typeof useCategories>['grouped'];
+  payees: PayeeEntity[];
+  categoryGroups: CategoryGroupEntity[];
   hideFraction: boolean;
   accountsSyncing: string[];
   dispatch: AppDispatch;
+  onSetTransfer: ReturnType<typeof useTransactionBatchActions>['onSetTransfer'];
+  onReopenAccount: (id: AccountEntity['id']) => void;
+  onUpdateAccount: (account: AccountEntity) => void;
+  onUnlinkAccount: (id: AccountEntity['id']) => void;
+  onSyncAndDownload: (accountId?: AccountEntity['id']) => void;
+  onCreatePayee: (name: PayeeEntity['name']) => Promise<PayeeEntity['id']>;
 };
+
 type AccountInternalState = {
   search: string;
   filterConditions: ConditionEntity[];
@@ -317,14 +274,12 @@ type AccountInternalState = {
   workingHard: boolean;
   reconcileAmount: null | number;
   transactions: TransactionEntity[];
-  transactionCount: number;
   transactionsFiltered?: boolean;
   showBalances?: boolean | undefined;
-  balances: Record<string, { balance: number }> | null;
+  balances: Record<TransactionEntity['id'], IntegerAmount> | null;
   showCleared?: boolean | undefined;
   prevShowCleared?: boolean | undefined;
   showReconciled: boolean;
-  editingName: boolean;
   nameError: string;
   isAdding: boolean;
   modalShowing?: boolean;
@@ -337,7 +292,7 @@ type AccountInternalState = {
   filteredAmount: null | number;
 };
 
-export type TableRef = MutableRefObject<{
+export type TableRef = RefObject<{
   edit: (updatedId: string | null, op?: string, someBool?: boolean) => void;
   setRowAnimation: (animation: boolean) => void;
   scrollTo: (focusId: string) => void;
@@ -355,6 +310,7 @@ class AccountInternal extends PureComponent<
   table: TableRef;
   unlisten?: () => void;
   dispatchSelected?: (action: Actions) => void;
+  _isOptimisticUpdate: boolean = false;
 
   constructor(props: AccountInternalProps) {
     super(props);
@@ -370,12 +326,10 @@ class AccountInternal extends PureComponent<
       workingHard: false,
       reconcileAmount: null,
       transactions: [],
-      transactionCount: 0,
       showBalances: props.showBalances,
       balances: null,
       showCleared: props.showCleared,
       showReconciled: props.showReconciled,
-      editingName: false,
       nameError: '',
       isAdding: false,
       sort: null,
@@ -440,14 +394,13 @@ class AccountInternal extends PureComponent<
 
     // Important that any async work happens last so that the
     // listeners are set up synchronously
-    await this.props.dispatch(initiallyLoadPayees());
-    await this.fetchTransactions(this.state.filterConditions);
+    this.fetchTransactions(this.state.filterConditions);
 
     // If there is a pending undo, apply it immediately (this happens
     // when an undo changes the location to this page)
     const lastUndoEvent = undo.getUndoState('undoEvent');
     if (lastUndoEvent) {
-      onUndo(lastUndoEvent);
+      void onUndo(lastUndoEvent);
     }
   }
 
@@ -465,7 +418,7 @@ class AccountInternal extends PureComponent<
       // things are listening to transactions and refetch
       // automatically (use ActualQL?)
       setTimeout(() => {
-        this.refetchTransactions();
+        void this.refetchTransactions();
       }, 100);
     }
 
@@ -489,7 +442,7 @@ class AccountInternal extends PureComponent<
       return [];
     }
 
-    const { data } = await runQuery(this.paged.query.select('id'));
+    const { data } = await aqlQuery(this.paged.query.select('id'));
     // Remember, this is the `grouped` split type so we need to deal
     // with the `subtransactions` property
     return data.reduce((arr: string[], t: TransactionEntity) => {
@@ -500,13 +453,13 @@ class AccountInternal extends PureComponent<
   };
 
   refetchTransactions = async () => {
-    this.paged?.run();
+    void this.paged?.run();
   };
 
   fetchTransactions = (filterConditions?: ConditionEntity[]) => {
     const query = this.makeRootTransactionsQuery();
     this.rootQuery = this.currentQuery = query;
-    if (filterConditions) this.applyFilters(filterConditions);
+    if (filterConditions) void this.applyFilters(filterConditions);
     else this.updateQuery(query);
 
     if (this.props.accountId) {
@@ -539,6 +492,32 @@ class AccountInternal extends PureComponent<
         const data = ungroupTransactions([...groupedData]);
         const firstLoad = prevData == null;
 
+        // Fast path for optimistic updates (e.g. field edits): skip the
+        // expensive aggregate DB queries (calculateBalances, getFilteredAmount)
+        // and just update the transaction list in state directly. Balances and
+        // filteredAmount will be refreshed on the next full DB-driven onData.
+        if (this._isOptimisticUpdate) {
+          this._isOptimisticUpdate = false;
+          const transactionsSnapshot = data;
+          const balances = this.state.showBalances
+            ? await this.calculateBalances()
+            : null;
+          // Wrap in startTransition so React treats this as a low-priority
+          // update. Without this, setState blocks the main thread for the
+          // full duration of the re-render (~40–220ms with large transaction
+          // lists), preventing input events from being processed and making
+          // the UI feel frozen. startTransition lets React break the render
+          // into chunks and yield to the browser between them, keeping the
+          // UI responsive while the row update happens in the background.
+          startTransition(() => {
+            this.setState({
+              transactions: transactionsSnapshot,
+              balances,
+            });
+          });
+          return;
+        }
+
         if (firstLoad) {
           this.table.current?.setRowAnimation(false);
 
@@ -555,17 +534,18 @@ class AccountInternal extends PureComponent<
           }
         }
 
+        const balances = this.state.showBalances
+          ? await this.calculateBalances()
+          : null;
+        const filteredAmount = await this.getFilteredAmount();
         this.setState(
           {
             transactions: data,
-            transactionCount: this.paged?.totalCount ?? 0,
             transactionsFiltered: isFiltered,
             loading: false,
             workingHard: false,
-            balances: this.state.showBalances
-              ? await this.calculateBalances()
-              : null,
-            filteredAmount: await this.getFilteredAmount(),
+            balances,
+            filteredAmount,
           },
           () => {
             if (firstLoad) {
@@ -585,11 +565,11 @@ class AccountInternal extends PureComponent<
     });
   }
 
+  // oxlint-disable-next-line react/no-unsafe
   UNSAFE_componentWillReceiveProps(nextProps: AccountInternalProps) {
     if (this.props.accountId !== nextProps.accountId) {
       this.setState(
         {
-          editingName: false,
           loading: true,
           search: '',
           showBalances: nextProps.showBalances,
@@ -632,9 +612,7 @@ class AccountInternal extends PureComponent<
     const accountId = this.props.accountId;
     const account = this.props.accounts.find(acct => acct.id === accountId);
 
-    await this.props.dispatch(
-      syncAndDownload({ accountId: account ? account.id : undefined }),
-    );
+    this.props.onSyncAndDownload(account ? account.id : accountId);
   };
 
   onImport = async () => {
@@ -654,13 +632,18 @@ class AccountInternal extends PureComponent<
       if (res) {
         if (accountId && res?.length > 0) {
           this.props.dispatch(
-            pushModal('import-transactions', {
-              accountId,
-              filename: res[0],
-              onImported: (didChange: boolean) => {
-                if (didChange) {
-                  this.fetchTransactions();
-                }
+            pushModal({
+              modal: {
+                name: 'import-transactions',
+                options: {
+                  accountId,
+                  filename: res[0],
+                  onImported: (didChange: boolean) => {
+                    if (didChange) {
+                      this.fetchTransactions();
+                    }
+                  },
+                },
               },
             }),
           );
@@ -677,7 +660,7 @@ class AccountInternal extends PureComponent<
       accountName && accountName.replace(/[()]/g, '').replace(/\s+/g, '-');
     const filename = `${normalizedName || 'transactions'}.csv`;
 
-    window.Actual.saveFile(
+    void window.Actual.saveFile(
       exportedTransactions,
       filename,
       t('Export transactions'),
@@ -685,7 +668,9 @@ class AccountInternal extends PureComponent<
   };
 
   onTransactionsChange = (updatedTransaction: TransactionEntity) => {
-    // Apply changes to pagedQuery data
+    // Apply changes to pagedQuery data optimistically. Set the flag so that
+    // onData skips the expensive aggregate DB queries for this update.
+    this._isOptimisticUpdate = true;
     this.paged?.optimisticUpdate(data => {
       if (updatedTransaction._deleted) {
         return data.filter(t => t.id !== updatedTransaction.id);
@@ -722,13 +707,17 @@ class AccountInternal extends PureComponent<
       return null;
     }
 
-    const { data } = await runQuery(
-      this.paged.query
-        .options({ splits: 'none' })
-        .select([{ balance: { $sumOver: '$amount' } }]),
-    );
+    const { data }: { data: { id: string; balance: number }[] } =
+      await aqlQuery(
+        this.paged.query
+          .options({ splits: 'none' })
+          .select([{ balance: { $sumOver: '$amount' } }]),
+      );
 
-    return groupById<{ id: string; balance: number }>(data);
+    return data.reduce((balances: Record<string, number>, row) => {
+      balances[row.id] = row.balance;
+      return balances;
+    }, {});
   }
 
   onRunRules = async (ids: string[]) => {
@@ -738,14 +727,34 @@ class AccountInternal extends PureComponent<
       const transactions = this.state.transactions.filter(trans =>
         ids.includes(trans.id),
       );
-      const changedTransactions = [];
+      const changedTransactions: TransactionEntity[] = [];
+      const allErrors: string[] = [];
+
       for (const transaction of transactions) {
         const res: TransactionEntity | null = await send('rules-run', {
           transaction,
         });
         if (res) {
-          changedTransactions.push(res);
+          changedTransactions.push(...ungroupTransaction(res));
+
+          // Collect formula errors
+          if (res._ruleErrors && res._ruleErrors.length > 0) {
+            allErrors.push(...res._ruleErrors);
+          }
         }
+      }
+
+      // Show errors if any
+      if (allErrors.length > 0) {
+        this.props.dispatch(
+          addNotification({
+            notification: {
+              type: 'error',
+              message: `Formula errors in rules:\n${allErrors.join('\n')}`,
+              sticky: true,
+            },
+          }),
+        );
       }
 
       // If we have changed transactions, update them in the database
@@ -761,8 +770,10 @@ class AccountInternal extends PureComponent<
       console.error('Error applying rules:', error);
       this.props.dispatch(
         addNotification({
-          type: 'error',
-          message: 'Failed to apply rules to transactions',
+          notification: {
+            type: 'error',
+            message: 'Failed to apply rules to transactions',
+          },
         }),
       );
     } finally {
@@ -772,10 +783,6 @@ class AccountInternal extends PureComponent<
 
   onAddTransaction = () => {
     this.setState({ isAdding: true });
-  };
-
-  onExposeName = (flag: boolean) => {
-    this.setState({ editingName: flag });
   };
 
   onSaveName = (name: string) => {
@@ -793,8 +800,8 @@ class AccountInternal extends PureComponent<
       if (!account) {
         throw new Error(`Account with ID ${this.props.accountId} not found.`);
       }
-      this.props.dispatch(updateAccount({ account: { ...account, name } }));
-      this.setState({ editingName: false, nameError: '' });
+      this.props.onUpdateAccount({ ...account, name });
+      this.setState({ nameError: '' });
     }
   };
 
@@ -809,10 +816,11 @@ class AccountInternal extends PureComponent<
       | 'close'
       | 'reopen'
       | 'export'
-      | 'toggle-balance'
       | 'remove-sorting'
-      | 'toggle-cleared'
-      | 'toggle-reconciled',
+      | 'toggle-reconciled'
+      | 'toggle-net-worth-chart'
+      | 'manage-columns'
+      | 'account-group',
   ) => {
     const accountId = this.props.accountId!;
     const account = this.props.accounts.find(
@@ -822,57 +830,59 @@ class AccountInternal extends PureComponent<
     switch (item) {
       case 'link':
         this.props.dispatch(
-          pushModal('add-account', {
-            upgradingAccountId: accountId,
+          pushModal({
+            modal: {
+              name: 'add-account',
+              options: {
+                upgradingAccountId: accountId,
+              },
+            },
           }),
         );
         break;
       case 'unlink':
         this.props.dispatch(
-          pushModal('confirm-unlink-account', {
-            accountName: account.name,
-            onUnlink: () => {
-              this.props.dispatch(unlinkAccount({ id: accountId }));
+          pushModal({
+            modal: {
+              name: 'confirm-unlink-account',
+              options: {
+                accountName: account.name,
+                isViewBankSyncSettings: false,
+                onUnlink: () => {
+                  this.props.onUnlinkAccount(accountId);
+                },
+              },
             },
           }),
         );
         break;
       case 'close':
-        this.props.dispatch(openAccountCloseModal(accountId));
+        void this.props.dispatch(openAccountCloseModal({ accountId }));
+        break;
+      case 'account-group':
+        this.props.dispatch(
+          pushModal({
+            modal: {
+              name: 'account-groups',
+              options: {
+                accountId,
+              },
+            },
+          }),
+        );
         break;
       case 'reopen':
-        this.props.dispatch(reopenAccount({ id: accountId }));
+        this.props.onReopenAccount(accountId);
         break;
       case 'export':
         const accountName = this.getAccountTitle(account, accountId);
-        this.onExport(accountName);
-        break;
-      case 'toggle-balance':
-        if (this.state.showBalances) {
-          this.props.setShowBalances(false);
-          this.setState({ showBalances: false, balances: null });
-        } else {
-          this.props.setShowBalances(true);
-          this.setState(
-            {
-              transactions: [],
-              transactionCount: 0,
-              filterConditions: [],
-              search: '',
-              sort: null,
-              showBalances: true,
-            },
-            () => {
-              this.fetchTransactions();
-            },
-          );
-        }
+        void this.onExport(accountName);
         break;
       case 'remove-sorting': {
         this.setState({ sort: null }, () => {
           const filterConditions = this.state.filterConditions;
           if (filterConditions.length > 0) {
-            this.applyFilters([...filterConditions]);
+            void this.applyFilters([...filterConditions]);
           } else {
             this.fetchTransactions();
           }
@@ -882,15 +892,6 @@ class AccountInternal extends PureComponent<
         });
         break;
       }
-      case 'toggle-cleared':
-        if (this.state.showCleared) {
-          this.props.setShowCleared(false);
-          this.setState({ showCleared: false });
-        } else {
-          this.props.setShowCleared(true);
-          this.setState({ showCleared: true });
-        }
-        break;
       case 'toggle-reconciled':
         if (this.state.showReconciled) {
           this.props.setShowReconciled(false);
@@ -904,7 +905,114 @@ class AccountInternal extends PureComponent<
           );
         }
         break;
+      case 'toggle-net-worth-chart':
+        if (this.props.showNetWorthChart) {
+          this.props.setShowNetWorthChart(false);
+        } else {
+          this.props.setShowNetWorthChart(true);
+        }
+        break;
+      case 'manage-columns':
+        this.onManageColumns();
+        break;
       default:
+    }
+  };
+
+  showAccountColumn = () => {
+    const accountId = this.props.accountId;
+    return !accountId || SPECIAL_VIEW_IDS.includes(accountId);
+  };
+
+  onManageColumns = () => {
+    const columns = this.props.transactionColumns
+      .filter(
+        column =>
+          (column.id !== 'account' || this.showAccountColumn()) &&
+          (column.id !== 'balance' || this.canCalculateBalance()),
+      )
+      .map(column => {
+        // Balance and cleared visibility can be temporarily overridden in
+        // component state (e.g. while reconciling) and may still come from
+        // the old per-account prefs, so state is the source of truth here.
+        if (column.id === 'balance') {
+          return { ...column, hidden: !this.state.showBalances };
+        }
+        if (column.id === 'cleared') {
+          // During reconciliation the cleared column is temporarily forced
+          // visible, so show the user's underlying preference instead
+          const showCleared =
+            this.state.reconcileAmount != null
+              ? this.state.prevShowCleared
+              : this.state.showCleared;
+          return { ...column, hidden: !showCleared };
+        }
+        // Group visibility may come from the legacy pref fallback rather
+        // than the saved config, so the resolved prop is the source of truth
+        if (column.id === 'group') {
+          return { ...column, hidden: !this.props.showGroup };
+        }
+        return column;
+      });
+
+    this.props.dispatch(
+      pushModal({
+        modal: {
+          name: 'transaction-table-columns',
+          options: {
+            columns,
+            onSave: this.onSaveColumns,
+          },
+        },
+      }),
+    );
+  };
+
+  onSaveColumns = (columns: TransactionTableColumn[], applyToAll: boolean) => {
+    // Columns that aren't managed in the current view (e.g. the account
+    // column on a single-account page) keep their previous position and
+    // visibility so a save here doesn't clobber them.
+    const merged = [...columns];
+    this.props.transactionColumns.forEach((column, index) => {
+      if (!merged.some(c => c.id === column.id)) {
+        merged.splice(Math.min(index, merged.length), 0, column);
+      }
+    });
+
+    this.props.saveColumns(merged, applyToAll);
+
+    // Toggling the balance column changes which queries run, so mirror the
+    // change into component state and refetch when needed.
+    const balance = columns.find(column => column.id === 'balance');
+    const isBalanceVisible = balance && !balance.hidden;
+    if (balance && isBalanceVisible !== !!this.state.showBalances) {
+      if (!isBalanceVisible) {
+        this.setState({ showBalances: false, balances: null });
+      } else {
+        this.setState(
+          {
+            transactions: [],
+            filterConditions: [],
+            search: '',
+            sort: null,
+            showBalances: true,
+          },
+          () => {
+            this.fetchTransactions();
+          },
+        );
+      }
+    }
+
+    const cleared = columns.find(column => column.id === 'cleared');
+    const isClearedVisible = cleared && !cleared.hidden;
+    if (cleared && isClearedVisible !== !!this.state.showCleared) {
+      // Also update prevShowCleared so finishing a reconciliation restores
+      // the visibility chosen here, not the stale pre-reconcile value
+      this.setState({
+        showCleared: isClearedVisible,
+        prevShowCleared: isClearedVisible,
+      });
     }
   };
 
@@ -943,7 +1051,7 @@ class AccountInternal extends PureComponent<
       return 0;
     }
 
-    const { data: amount } = await runQuery(
+    const { data: amount } = await aqlQuery(
       this.paged.query.calculate({ $sum: '$amount' }),
     );
     return amount;
@@ -957,45 +1065,23 @@ class AccountInternal extends PureComponent<
     return this.props.matchedTransactions.includes(id);
   };
 
-  onCreatePayee = (name: string) => {
+  onCreatePayee = async (name: string) => {
     const trimmed = name.trim();
     if (trimmed !== '') {
-      return this.props.dispatch(createPayee({ name })).unwrap();
+      return await this.props.onCreatePayee(name);
     }
     return null;
   };
 
   lockTransactions = async () => {
+    const { accountId } = this.props;
+    if (!accountId) {
+      return;
+    }
+
     this.setState({ workingHard: true });
 
-    const { accountId } = this.props;
-
-    const { data } = await runQuery(
-      q('transactions')
-        .filter({ cleared: true, reconciled: false, account: accountId })
-        .select('*')
-        .options({ splits: 'grouped' }),
-    );
-    let transactions = ungroupTransactions(data);
-
-    const changes: { updated: Array<Partial<TransactionEntity>> } = {
-      updated: [],
-    };
-
-    transactions.forEach(trans => {
-      const { diff } = updateTransaction(transactions, {
-        ...trans,
-        reconciled: true,
-      });
-
-      transactions = applyChanges(diff, transactions);
-
-      changes.updated = changes.updated
-        ? changes.updated.concat(diff.updated)
-        : diff.updated;
-    });
-
-    await send('transactions-batch-update', changes);
+    await reconciliation.lockTransactions(accountId);
     await this.refetchTransactions();
   };
 
@@ -1009,82 +1095,59 @@ class AccountInternal extends PureComponent<
 
   onDoneReconciling = async () => {
     const { accountId } = this.props;
-    const { reconcileAmount } = this.state;
-
-    const { data } = await runQuery(
-      q('transactions')
-        .filter({ cleared: true, account: accountId })
-        .select('*')
-        .options({ splits: 'grouped' }),
+    const account = this.props.accounts.find(
+      account => account.id === accountId,
     );
-    const transactions = ungroupTransactions(data);
-
-    let cleared = 0;
-
-    transactions.forEach(trans => {
-      if (!trans.is_parent) {
-        cleared += trans.amount;
-      }
-    });
-
-    const targetDiff = (reconcileAmount || 0) - cleared;
-
-    if (targetDiff === 0) {
-      await this.lockTransactions();
+    if (!account) {
+      throw new Error(`Account with ID ${accountId} not found.`);
     }
 
-    this.setState({
+    const { reconcileAmount } = this.state;
+
+    await reconciliation.finishReconciliation(account.id, reconcileAmount, () =>
+      this.lockTransactions(),
+    );
+
+    const lastReconciled = new Date().getTime().toString();
+    this.props.onUpdateAccount({ ...account, last_reconciled: lastReconciled });
+
+    this.setState(state => ({
       reconcileAmount: null,
-      showCleared: this.state.prevShowCleared,
-    });
+      showCleared: state.prevShowCleared,
+    }));
   };
 
   onCreateReconciliationTransaction = async (diff: number) => {
-    // Create a new reconciliation transaction
-    const reconciliationTransactions = realizeTempTransactions([
-      {
-        id: 'temp',
-        account: this.props.accountId!,
-        cleared: true,
-        reconciled: false,
-        amount: diff,
-        date: currentDay(),
-        notes: t('Reconciliation balance adjustment'),
-      },
-    ]);
+    const { accountId } = this.props;
+    if (!accountId) {
+      return;
+    }
 
-    // Optimistic UI: update the transaction list before sending the data to the database
-    this.setState({
-      transactions: [...reconciliationTransactions, ...this.state.transactions],
-    });
-
-    // run rules on the reconciliation transaction
-    const ruledTransactions = await Promise.all(
-      reconciliationTransactions.map(transaction =>
-        send('rules-run', { transaction }),
-      ),
+    await reconciliation.createReconciliationTransaction(
+      accountId,
+      diff,
+      // Optimistic UI: update the transaction list before sending the data to the database
+      reconciliationTransactions =>
+        this.setState(state => ({
+          transactions: [...reconciliationTransactions, ...state.transactions],
+        })),
     );
-
-    // sync the reconciliation transaction
-    await send('transactions-batch-update', {
-      added: ruledTransactions,
-    });
     await this.refetchTransactions();
   };
 
   onShowTransactions = async (ids: string[]) => {
-    this.onApplyFilter({
+    void this.onApplyFilter({
       customName: t('Selected transactions'),
       queryFilter: { id: { $oneof: ids } },
     });
   };
 
   onBatchEdit = (name: keyof TransactionEntity, ids: string[]) => {
-    this.props.onBatchEdit({
+    void this.props.onBatchEdit({
       name,
       ids,
       onSuccess: updatedIds => {
-        this.refetchTransactions();
+        void this.refetchTransactions();
 
         if (this.table.current) {
           this.table.current.edit(updatedIds[0], 'select', false);
@@ -1094,17 +1157,20 @@ class AccountInternal extends PureComponent<
   };
 
   onBatchDuplicate = (ids: string[]) => {
-    this.props.onBatchDuplicate({ ids, onSuccess: this.refetchTransactions });
+    void this.props.onBatchDuplicate({
+      ids,
+      onSuccess: this.refetchTransactions,
+    });
   };
 
   onBatchDelete = (ids: string[]) => {
-    this.props.onBatchDelete({ ids, onSuccess: this.refetchTransactions });
+    void this.props.onBatchDelete({ ids, onSuccess: this.refetchTransactions });
   };
 
   onMakeAsSplitTransaction = async (ids: string[]) => {
     this.setState({ workingHard: true });
 
-    const { data } = await runQuery(
+    const { data } = await aqlQuery(
       q('transactions')
         .filter({ id: { $oneof: ids } })
         .select('*')
@@ -1137,13 +1203,13 @@ class AccountInternal extends PureComponent<
       updated: childTransactions,
     });
 
-    this.refetchTransactions();
+    void this.refetchTransactions();
   };
 
   onMakeAsNonSplitTransactions = async (ids: string[]) => {
     this.setState({ workingHard: true });
 
-    const { data } = await runQuery(
+    const { data } = await aqlQuery(
       q('transactions')
         .filter({ id: { $oneof: ids } })
         .select('*')
@@ -1207,7 +1273,7 @@ class AccountInternal extends PureComponent<
 
     await send('transactions-batch-update', changes);
 
-    this.refetchTransactions();
+    void this.refetchTransactions();
 
     const transactionsToSelect = changes.updated.map(t => t.id);
     this.dispatchSelected?.({
@@ -1216,12 +1282,24 @@ class AccountInternal extends PureComponent<
     });
   };
 
+  onMergeTransactions = async (ids: string[]) => {
+    const keptId = await send(
+      'transactions-merge',
+      ids.map(id => ({ id })),
+    );
+    await this.refetchTransactions();
+    this.dispatchSelected?.({
+      type: 'select-all',
+      ids: [keptId],
+    });
+  };
+
   checkForReconciledTransactions = async (
     ids: string[],
-    confirmReason: string,
+    confirmReason: ConfirmTransactionEditReason,
     onConfirm: (ids: string[]) => void,
   ) => {
-    const { data } = await runQuery(
+    const { data } = await aqlQuery(
       q('transactions')
         .filter({ id: { $oneof: ids }, reconciled: true })
         .select('*')
@@ -1230,11 +1308,16 @@ class AccountInternal extends PureComponent<
     const transactions = ungroupTransactions(data);
     if (transactions.length > 0) {
       this.props.dispatch(
-        pushModal('confirm-transaction-edit', {
-          onConfirm: () => {
-            onConfirm(ids);
+        pushModal({
+          modal: {
+            name: 'confirm-transaction-edit',
+            options: {
+              onConfirm: () => {
+                onConfirm(ids);
+              },
+              confirmReason,
+            },
           },
-          confirmReason,
         }),
       );
     } else {
@@ -1243,7 +1326,7 @@ class AccountInternal extends PureComponent<
   };
 
   onBatchLinkSchedule = (ids: string[]) => {
-    this.props.onBatchLinkSchedule({
+    void this.props.onBatchLinkSchedule({
       ids,
       account: this.props.accounts.find(a => a.id === this.props.accountId),
       onSuccess: this.refetchTransactions,
@@ -1251,14 +1334,14 @@ class AccountInternal extends PureComponent<
   };
 
   onBatchUnlinkSchedule = (ids: string[]) => {
-    this.props.onBatchUnlinkSchedule({
+    void this.props.onBatchUnlinkSchedule({
       ids,
       onSuccess: this.refetchTransactions,
     });
   };
 
   onCreateRule = async (ids: string[]) => {
-    const { data } = await runQuery(
+    const { data } = await aqlQuery(
       q('transactions')
         .filter({ id: { $oneof: ids } })
         .select('*')
@@ -1331,62 +1414,26 @@ class AccountInternal extends PureComponent<
       ],
     } satisfies NewRuleEntity;
 
-    this.props.dispatch(pushModal('edit-rule', { rule }));
+    this.props.dispatch(
+      pushModal({ modal: { name: 'edit-rule', options: { rule } } }),
+    );
   };
 
   onSetTransfer = async (ids: string[]) => {
-    const onConfirmTransfer = async (ids: string[]) => {
-      this.setState({ workingHard: true });
-
-      const payees = this.props.payees;
-
-      const { data: transactions } = await runQuery(
-        q('transactions')
-          .filter({ id: { $oneof: ids } })
-          .select('*'),
-      );
-      const [fromTrans, toTrans] = transactions;
-
-      if (transactions.length === 2 && validForTransfer(fromTrans, toTrans)) {
-        const fromPayee = payees.find(
-          p => p.transfer_acct === fromTrans.account,
-        );
-        const toPayee = payees.find(p => p.transfer_acct === toTrans.account);
-
-        const changes = {
-          updated: [
-            {
-              ...fromTrans,
-              payee: toPayee?.id,
-              transfer_id: toTrans.id,
-            },
-            {
-              ...toTrans,
-              payee: fromPayee?.id,
-              transfer_id: fromTrans.id,
-            },
-          ],
-        };
-
-        await send('transactions-batch-update', changes);
-      }
-
-      await this.refetchTransactions();
-    };
-
-    await this.checkForReconciledTransactions(
+    this.setState({ workingHard: true });
+    await this.props.onSetTransfer(
       ids,
-      'batchEditWithReconciled',
-      onConfirmTransfer,
+      this.props.payees,
+      this.refetchTransactions,
     );
   };
 
   onConditionsOpChange = (value: 'and' | 'or') => {
-    this.setState({ filterConditionsOp: value });
-    this.setState({
-      filterId: { ...this.state.filterId, status: 'changed' } as SavedFilter,
-    });
-    this.applyFilters([...this.state.filterConditions]);
+    this.setState(state => ({
+      filterConditionsOp: value,
+      filterId: { ...state.filterId, status: 'changed' } as SavedFilter,
+    }));
+    void this.applyFilters([...this.state.filterConditions]);
     if (this.state.search !== '') {
       this.onSearch(this.state.search);
     }
@@ -1398,22 +1445,24 @@ class AccountInternal extends PureComponent<
         f => f.id === this.state.filterId?.id,
       );
       this.setState({ filterConditionsOp: savedFilter.conditionsOp ?? 'and' });
-      this.applyFilters([...savedFilter.conditions]);
+      void this.applyFilters([...savedFilter.conditions]);
     } else {
       if (savedFilter.status) {
         this.setState({
           filterConditionsOp: savedFilter.conditionsOp ?? 'and',
         });
-        this.applyFilters([...(savedFilter.conditions ?? [])]);
+        void this.applyFilters([...(savedFilter.conditions ?? [])]);
       }
     }
-    this.setState({ filterId: { ...this.state.filterId, ...savedFilter } });
+    this.setState(state => ({
+      filterId: { ...state.filterId, ...savedFilter },
+    }));
   };
 
   onClearFilters = () => {
     this.setState({ filterConditionsOp: 'and' });
     this.setState({ filterId: undefined });
-    this.applyFilters([]);
+    void this.applyFilters([]);
     if (this.state.search !== '') {
       this.onSearch(this.state.search);
     }
@@ -1423,34 +1472,35 @@ class AccountInternal extends PureComponent<
     oldCondition: RuleConditionEntity,
     updatedCondition: RuleConditionEntity,
   ) => {
-    this.applyFilters(
+    void this.applyFilters(
       this.state.filterConditions.map(c =>
         c === oldCondition ? updatedCondition : c,
       ),
     );
-    this.setState({
+    this.setState(state => ({
       filterId: {
-        ...this.state.filterId,
-        status: this.state.filterId && 'changed',
+        ...state.filterId,
+        status: state.filterId && 'changed',
       } as SavedFilter,
-    });
+    }));
     if (this.state.search !== '') {
       this.onSearch(this.state.search);
     }
   };
 
   onDeleteFilter = (condition: RuleConditionEntity) => {
-    this.applyFilters(this.state.filterConditions.filter(c => c !== condition));
+    void this.applyFilters(
+      this.state.filterConditions.filter(c => c !== condition),
+    );
     if (this.state.filterConditions.length === 1) {
-      this.setState({ filterId: undefined });
-      this.setState({ filterConditionsOp: 'and' });
+      this.setState({ filterId: undefined, filterConditionsOp: 'and' });
     } else {
-      this.setState({
+      this.setState(state => ({
         filterId: {
-          ...this.state.filterId,
-          status: this.state.filterId && 'changed',
+          ...state.filterId,
+          status: state.filterId && 'changed',
         } as SavedFilter,
-      });
+      }));
     }
     if (this.state.search !== '') {
       this.onSearch(this.state.search);
@@ -1478,17 +1528,23 @@ class AccountInternal extends PureComponent<
         filterId: { ...savedFilter, status: 'saved' },
       });
       this.setState({ filterConditionsOp: savedFilter.conditionsOp });
-      this.applyFilters([...savedFilter.conditions]);
+      void this.applyFilters([...savedFilter.conditions]);
     } else {
       // A condition was passed in.
       const condition = conditionOrSavedFilter;
-      this.setState({
+      const isDuplicate = filterConditions.some(c => isEqual(c, condition));
+
+      if (isDuplicate) {
+        return;
+      }
+
+      this.setState(state => ({
         filterId: {
-          ...this.state.filterId,
-          status: this.state.filterId && 'changed',
+          ...state.filterId,
+          status: state.filterId && 'changed',
         } as SavedFilter,
-      });
-      this.applyFilters([...filterConditions, condition]);
+      }));
+      void this.applyFilters([...filterConditions, condition]);
     }
 
     if (this.state.search !== '') {
@@ -1497,8 +1553,8 @@ class AccountInternal extends PureComponent<
   };
 
   onScheduleAction = async (
-    name: 'skip' | 'post-transaction' | 'complete',
-    ids: string[],
+    name: 'skip' | 'post-transaction' | 'post-transaction-today' | 'complete',
+    ids: TransactionEntity['id'][],
   ) => {
     const scheduleIds = ids.map(id => id.split('/')[1]);
 
@@ -1507,7 +1563,13 @@ class AccountInternal extends PureComponent<
         for (const id of scheduleIds) {
           await send('schedule/post-transaction', { id });
         }
-        this.refetchTransactions();
+        void this.refetchTransactions();
+        break;
+      case 'post-transaction-today':
+        for (const id of scheduleIds) {
+          await send('schedule/post-transaction', { id, today: true });
+        }
+        void this.refetchTransactions();
         break;
       case 'skip':
         for (const id of scheduleIds) {
@@ -1556,7 +1618,6 @@ class AccountInternal extends PureComponent<
       this.setState(
         {
           transactions: [],
-          transactionCount: 0,
           filterConditions: conditions,
         },
         () => {
@@ -1652,7 +1713,7 @@ class AccountInternal extends PureComponent<
       // called directly from UI by sorting a column.
       // active filters need to be applied before sorting
       case isFiltered:
-        this.applyFilters([...filterConditions]);
+        void this.applyFilters([...filterConditions]);
         sortCurrentQuery(this, sortField, sortAscDesc);
         break;
 
@@ -1666,6 +1727,11 @@ class AccountInternal extends PureComponent<
     }
 
     maybeSortByPreviousField(this, sortPrevField, sortPrevAscDesc);
+
+    // Always add sort_order as a final tiebreaker to maintain stable ordering
+    // when transactions have the same values in the sorted column(s)
+    this.currentQuery = this.currentQuery.orderBy({ sort_order: sortAscDesc });
+
     this.updateQuery(this.currentQuery, isFiltered);
   };
 
@@ -1677,25 +1743,26 @@ class AccountInternal extends PureComponent<
     if (headerClicked === this.state.sort?.field) {
       prevField = this.state.sort.prevField;
       prevAscDesc = this.state.sort.prevAscDesc;
-      this.setState({
+      this.setState(state => ({
         sort: {
-          ...this.state.sort,
+          ...state.sort,
+          field: headerClicked,
           ascDesc,
         },
-      });
+      }));
     } else {
       //if switching to new column then capture state
       //of current sort column as prev
       prevField = this.state.sort?.field;
       prevAscDesc = this.state.sort?.ascDesc;
-      this.setState({
+      this.setState(state => ({
         sort: {
           field: headerClicked,
           ascDesc,
-          prevField: this.state.sort?.field,
-          prevAscDesc: this.state.sort?.ascDesc,
+          prevField: state.sort?.field,
+          prevAscDesc: state.sort?.ascDesc,
         },
-      });
+      }));
     }
 
     this.applySort(headerClicked, ascDesc, prevField, prevAscDesc);
@@ -1712,7 +1779,6 @@ class AccountInternal extends PureComponent<
       dateFormat,
       hideFraction,
       accountsSyncing,
-      failedAccounts,
       showExtraBalances,
       accountId,
       categoryId,
@@ -1724,7 +1790,6 @@ class AccountInternal extends PureComponent<
       filterId,
       reconcileAmount,
       transactionsFiltered,
-      editingName,
       showBalances,
       balances,
       showCleared,
@@ -1755,6 +1820,14 @@ class AccountInternal extends PureComponent<
 
     const balanceQuery = this.getBalanceQuery(accountId);
 
+    const selectAllFilter = (item: TransactionEntity): boolean => {
+      if (item.is_parent) {
+        const children = transactions.filter(t => t.parent_id === item.id);
+        return children.every(t => selectAllFilter(t));
+      }
+      return !item._unmatched;
+    };
+
     return (
       <AllTransactions
         account={account}
@@ -1766,32 +1839,37 @@ class AccountInternal extends PureComponent<
         {(allTransactions, allBalances) => (
           <SelectedProviderWithItems
             name="transactions"
-            items={allTransactions}
+            // When reconciled transactions are hidden they are still
+            // loaded (e.g. to calculate running balances), but they must
+            // not be selectable. Mirror the filtering the transaction
+            // table applies when rendering so that range selection
+            // (shift+click) only covers visible transactions.
+            items={
+              showReconciled
+                ? allTransactions
+                : allTransactions.filter(t => !t.reconciled)
+            }
             fetchAllIds={this.fetchAllIds}
             registerDispatch={dispatch => (this.dispatchSelected = dispatch)}
-            selectAllFilter={item => !item._unmatched && !item.is_parent}
+            selectAllFilter={selectAllFilter}
           >
             <View style={styles.page}>
               <AccountHeader
                 tableRef={this.table}
-                editingName={editingName ?? false}
                 isNameEditable={isNameEditable ?? false}
                 workingHard={workingHard ?? false}
+                accountId={accountId}
                 account={account}
                 filterId={filterId}
                 savedFilters={this.props.savedFilters}
                 accountName={accountName}
                 accountsSyncing={accountsSyncing}
-                failedAccounts={failedAccounts}
                 accounts={accounts}
                 transactions={transactions}
-                showBalances={showBalances ?? false}
                 showExtraBalances={showExtraBalances ?? false}
-                showCleared={showCleared ?? false}
                 showReconciled={showReconciled ?? false}
                 showEmptyMessage={showEmptyMessage ?? false}
                 balanceQuery={balanceQuery}
-                canCalculateBalance={this?.canCalculateBalance ?? undefined}
                 filteredAmount={filteredAmount}
                 isFiltered={transactionsFiltered ?? false}
                 isSorted={this.state.sort !== null}
@@ -1807,7 +1885,6 @@ class AccountInternal extends PureComponent<
                 onToggleExtraBalances={this.onToggleExtraBalances}
                 onSaveName={this.onSaveName}
                 saveNameError={this.state.nameError}
-                onExposeName={this.onExposeName}
                 onReconcile={this.onReconcile}
                 onDoneReconciling={this.onDoneReconciling}
                 onCreateReconciliationTransaction={
@@ -1832,11 +1909,13 @@ class AccountInternal extends PureComponent<
                 onSetTransfer={this.onSetTransfer}
                 onMakeAsSplitTransaction={this.onMakeAsSplitTransaction}
                 onMakeAsNonSplitTransactions={this.onMakeAsNonSplitTransactions}
+                onMergeTransactions={this.onMergeTransactions}
               />
 
               <View style={{ flex: 1 }}>
                 <TransactionList
                   headerContent={undefined}
+                  // @ts-expect-error - fix me
                   tableRef={this.table}
                   account={account}
                   transactions={transactions}
@@ -1851,12 +1930,15 @@ class AccountInternal extends PureComponent<
                   balances={allBalances}
                   showBalances={!!allBalances}
                   showReconciled={showReconciled}
-                  showCleared={showCleared}
-                  showAccount={
-                    !accountId ||
-                    accountId === 'offbudget' ||
-                    accountId === 'onbudget' ||
-                    accountId === 'uncategorized'
+                  showCleared={!!showCleared}
+                  showGroup={this.props.showGroup}
+                  showAccount={this.showAccountColumn()}
+                  columnOrder={this.props.columnOrder}
+                  allowReorder={
+                    !!accountId &&
+                    accountId !== 'offbudget' &&
+                    accountId !== 'onbudget' &&
+                    accountId !== 'uncategorized'
                   }
                   isAdding={this.state.isAdding}
                   isNew={this.isNew}
@@ -1866,9 +1948,13 @@ class AccountInternal extends PureComponent<
                   hideFraction={hideFraction}
                   renderEmpty={() =>
                     showEmptyMessage ? (
-                      <EmptyMessage
+                      <AccountEmptyMessage
                         onAdd={() =>
-                          this.props.dispatch(replaceModal('add-account'))
+                          this.props.dispatch(
+                            replaceModal({
+                              modal: { name: 'add-account', options: {} },
+                            }),
+                          )
                         }
                       />
                     ) : !loading ? (
@@ -1880,13 +1966,13 @@ class AccountInternal extends PureComponent<
                           fontStyle: 'italic',
                         }}
                       >
-                        No transactions
+                        <Trans>No transactions</Trans>
                       </View>
                     ) : null
                   }
                   onSort={this.onSort}
-                  sortField={this.state.sort?.field}
-                  ascDesc={this.state.sort?.ascDesc}
+                  sortField={this.state.sort?.field ?? ''}
+                  ascDesc={this.state.sort?.ascDesc ?? 'asc'}
                   onChange={this.onTransactionsChange}
                   onBatchDelete={this.onBatchDelete}
                   onBatchDuplicate={this.onBatchDuplicate}
@@ -1922,6 +2008,7 @@ type AccountHackProps = Omit<
   | 'onBatchLinkSchedule'
   | 'onBatchUnlinkSchedule'
   | 'onBatchDelete'
+  | 'onSetTransfer'
 >;
 
 function AccountHack(props: AccountHackProps) {
@@ -1933,6 +2020,7 @@ function AccountHack(props: AccountHackProps) {
     onBatchLinkSchedule,
     onBatchUnlinkSchedule,
     onBatchDelete,
+    onSetTransfer,
   } = useTransactionBatchActions();
 
   return (
@@ -1944,6 +2032,7 @@ function AccountHack(props: AccountHackProps) {
       onBatchLinkSchedule={onBatchLinkSchedule}
       onBatchUnlinkSchedule={onBatchUnlinkSchedule}
       onBatchDelete={onBatchDelete}
+      onSetTransfer={onSetTransfer}
       {...props}
     />
   );
@@ -1953,22 +2042,21 @@ export function Account() {
   const params = useParams();
   const location = useLocation();
 
-  const { grouped: categoryGroups } = useCategories();
-  const newTransactions = useSelector(state => state.queries.newTransactions);
-  const matchedTransactions = useSelector(
-    state => state.queries.matchedTransactions,
+  const { data: { grouped: categoryGroups } = { grouped: [] } } =
+    useCategories();
+  const newTransactions = useSelector(
+    state => state.transactions.newTransactions,
   );
-  const accounts = useAccounts();
-  const payees = usePayees();
-  const failedAccounts = useFailedAccounts();
+  const matchedTransactions = useSelector(
+    state => state.transactions.matchedTransactions,
+  );
+  const { data: accounts = [] } = useAccounts();
+  const { data: payees = [] } = usePayees();
   const dateFormat = useDateFormat() || 'MM/dd/yyyy';
   const [hideFraction] = useSyncedPref('hideFraction');
   const [expandSplits] = useLocalPref('expand-splits');
-  const [showBalances, setShowBalances] = useSyncedPref(
-    `show-balances-${params.id}`,
-  );
-  const [hideCleared, setHideCleared] = useSyncedPref(
-    `hide-cleared-${params.id}`,
+  const [showNetWorthChart, setShowNetWorthChart] = useSyncedPref(
+    `show-account-${params.id}-net-worth-chart`,
   );
   const [hideReconciled, setHideReconciled] = useSyncedPref(
     `hide-reconciled-${params.id}`,
@@ -1976,53 +2064,88 @@ export function Account() {
   const [showExtraBalances, setShowExtraBalances] = useSyncedPref(
     `show-extra-balances-${params.id || 'all-accounts'}`,
   );
+  const {
+    transactionColumns,
+    columnOrder,
+    showBalances,
+    showCleared,
+    showGroup,
+    saveColumns,
+  } = useTransactionTableColumns(params.id);
+
   const modalShowing = useSelector(state => state.modals.modalStack.length > 0);
   const accountsSyncing = useSelector(state => state.account.accountsSyncing);
   const filterConditions = location?.state?.filterConditions || [];
 
-  const savedFiters = useFilters();
+  const savedFiters = useTransactionFilters();
 
   const schedulesQuery = useMemo(
-    () => accountSchedulesQuery(params.id),
+    () => getSchedulesQuery(params.id),
     [params.id],
   );
 
+  const { mutate: reopenAccount } = useReopenAccountMutation();
+  const onReopenAccount = (id: AccountEntity['id']) => reopenAccount({ id });
+
+  const { mutate: updateAccount } = useUpdateAccountMutation();
+  const onUpdateAccount = (account: AccountEntity) =>
+    updateAccount({ account });
+
+  const { mutate: unlinkAccount } = useUnlinkAccountMutation();
+  const onUnlinkAccount = (id: AccountEntity['id']) => unlinkAccount({ id });
+
+  const { mutate: syncAndDownload } = useSyncAndDownloadMutation();
+  const onSyncAndDownload = (id?: AccountEntity['id']) =>
+    syncAndDownload({ id });
+
+  const createPayee = useCreatePayeeMutation();
+  const onCreatePayee = (name: PayeeEntity['name']) =>
+    createPayee.mutateAsync({ name });
+
   return (
-    <SchedulesProvider query={schedulesQuery}>
-      <SplitsExpandedProvider
-        initialMode={expandSplits ? 'collapse' : 'expand'}
-      >
-        <AccountHack
-          newTransactions={newTransactions}
-          matchedTransactions={matchedTransactions}
-          accounts={accounts}
-          failedAccounts={failedAccounts}
-          dateFormat={dateFormat}
-          hideFraction={String(hideFraction) === 'true'}
-          expandSplits={expandSplits}
-          showBalances={String(showBalances) === 'true'}
-          setShowBalances={showBalances =>
-            setShowBalances(String(showBalances))
-          }
-          showCleared={String(hideCleared) !== 'true'}
-          setShowCleared={val => setHideCleared(String(!val))}
-          showReconciled={String(hideReconciled) !== 'true'}
-          setShowReconciled={val => setHideReconciled(String(!val))}
-          showExtraBalances={String(showExtraBalances) === 'true'}
-          setShowExtraBalances={extraBalances =>
-            setShowExtraBalances(String(extraBalances))
-          }
-          payees={payees}
-          modalShowing={modalShowing}
-          accountsSyncing={accountsSyncing}
-          filterConditions={filterConditions}
-          categoryGroups={categoryGroups}
-          accountId={params.id}
-          categoryId={location?.state?.categoryId}
-          location={location}
-          savedFilters={savedFiters}
-        />
-      </SplitsExpandedProvider>
-    </SchedulesProvider>
+    <ErrorBoundary FallbackComponent={FeatureErrorFallback}>
+      <SchedulesProvider query={schedulesQuery}>
+        <SplitsExpandedProvider
+          initialMode={expandSplits ? 'collapse' : 'expand'}
+        >
+          <AccountHack
+            newTransactions={newTransactions}
+            matchedTransactions={matchedTransactions}
+            accounts={accounts}
+            dateFormat={dateFormat}
+            hideFraction={String(hideFraction) === 'true'}
+            expandSplits={expandSplits}
+            showBalances={showBalances}
+            showNetWorthChart={String(showNetWorthChart) === 'true'}
+            setShowNetWorthChart={val => setShowNetWorthChart(String(val))}
+            showCleared={showCleared}
+            showReconciled={String(hideReconciled) !== 'true'}
+            setShowReconciled={val => setHideReconciled(String(!val))}
+            showGroup={showGroup}
+            showExtraBalances={String(showExtraBalances) === 'true'}
+            setShowExtraBalances={extraBalances =>
+              setShowExtraBalances(String(extraBalances))
+            }
+            transactionColumns={transactionColumns}
+            columnOrder={columnOrder}
+            saveColumns={saveColumns}
+            payees={payees}
+            modalShowing={modalShowing}
+            accountsSyncing={accountsSyncing}
+            filterConditions={filterConditions}
+            categoryGroups={categoryGroups}
+            accountId={params.id}
+            categoryId={location?.state?.categoryId}
+            location={location}
+            savedFilters={savedFiters}
+            onReopenAccount={onReopenAccount}
+            onUpdateAccount={onUpdateAccount}
+            onUnlinkAccount={onUnlinkAccount}
+            onSyncAndDownload={onSyncAndDownload}
+            onCreatePayee={onCreatePayee}
+          />
+        </SplitsExpandedProvider>
+      </SchedulesProvider>
+    </ErrorBoundary>
   );
 }

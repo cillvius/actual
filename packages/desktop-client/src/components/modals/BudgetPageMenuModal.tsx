@@ -1,15 +1,19 @@
-import React, {
-  type ComponentPropsWithoutRef,
-  type CSSProperties,
-} from 'react';
+import React from 'react';
+import type { ComponentPropsWithoutRef, CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useLocalPref } from '../../hooks/useLocalPref';
-import { theme, styles } from '../../style';
-import { Menu } from '../common/Menu';
-import { Modal, ModalCloseButton, ModalHeader } from '../common/Modal';
+import { Menu } from '@actual-app/components/menu';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
 
-type BudgetPageMenuModalProps = ComponentPropsWithoutRef<typeof BudgetPageMenu>;
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { useLocalPref } from '#hooks/useLocalPref';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+
+type BudgetPageMenuModalProps = Extract<
+  ModalType,
+  { name: 'budget-page-menu' }
+>['options'];
 
 export function BudgetPageMenuModal({
   onAddCategoryGroup,
@@ -25,11 +29,11 @@ export function BudgetPageMenuModal({
 
   return (
     <Modal name="budget-page-menu">
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             showLogo
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <BudgetPageMenu
             getItemStyle={() => defaultMenuItemStyle}

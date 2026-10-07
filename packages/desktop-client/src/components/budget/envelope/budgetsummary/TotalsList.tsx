@@ -1,15 +1,45 @@
-import React, { type CSSProperties } from 'react';
+import React from 'react';
+import type { CSSProperties } from 'react';
+import { Trans } from 'react-i18next';
 
-import { envelopeBudget } from 'loot-core/src/client/queries';
+import { AlignedText } from '@actual-app/components/aligned-text';
+import { Block } from '@actual-app/components/block';
+import { styles } from '@actual-app/components/styles';
+import { Tooltip } from '@actual-app/components/tooltip';
+import { View } from '@actual-app/components/view';
 
-import { styles } from '../../../../style';
-import { AlignedText } from '../../../common/AlignedText';
-import { Block } from '../../../common/Block';
-import { Tooltip } from '../../../common/Tooltip';
-import { View } from '../../../common/View';
-import { CellValueText } from '../../../spreadsheet/CellValue';
-import { useFormat } from '../../../spreadsheet/useFormat';
-import { EnvelopeCellValue } from '../EnvelopeBudgetComponents';
+import { EnvelopeCellValue } from '#components/budget/envelope/EnvelopeBudgetComponents';
+import { CellValueText } from '#components/spreadsheet/CellValue';
+import { useFormat } from '#hooks/useFormat';
+import type { FormatType } from '#hooks/useFormat';
+import { envelopeBudget } from '#spreadsheet/bindings';
+
+/**
+ * Creates a formatter that displays values with explicit +/- signs.
+ * Uses Math.abs to avoid double-negative display (e.g., "--$0.00").
+ *
+ * @param format - The format function from useFormat hook
+ * @param invert - If true, shows '-' for positive and '+' for negative
+ */
+function makeSignedFormatter(
+  format: ReturnType<typeof useFormat>,
+  invert = false,
+) {
+  return (value: number, type?: FormatType) => {
+    const v = format(Math.abs(value), type);
+    if (value === 0) {
+      return '-' + v;
+    }
+    const isPositive = value > 0;
+    return invert
+      ? isPositive
+        ? '-' + v
+        : '+' + v
+      : isPositive
+        ? '+' + v
+        : '-' + v;
+  };
+}
 
 type TotalsListProps = {
   prevMonthName: string;
@@ -18,6 +48,8 @@ type TotalsListProps = {
 
 export function TotalsList({ prevMonthName, style }: TotalsListProps) {
   const format = useFormat();
+  const signedFormatter = makeSignedFormatter(format);
+  const invertedSignedFormatter = makeSignedFormatter(format, true);
   return (
     <View
       style={{
@@ -77,10 +109,7 @@ export function TotalsList({ prevMonthName, style }: TotalsListProps) {
             <CellValueText
               {...props}
               style={{ fontWeight: 600 }}
-              formatter={(value, type) => {
-                const v = format(value, type);
-                return value > 0 ? '+' + v : value === 0 ? '-' + v : v;
-              }}
+              formatter={signedFormatter}
             />
           )}
         </EnvelopeCellValue>
@@ -93,10 +122,7 @@ export function TotalsList({ prevMonthName, style }: TotalsListProps) {
             <CellValueText
               {...props}
               style={{ fontWeight: 600 }}
-              formatter={(value, type) => {
-                const v = format(value, type);
-                return value > 0 ? '+' + v : value === 0 ? '-' + v : v;
-              }}
+              formatter={signedFormatter}
             />
           )}
         </EnvelopeCellValue>
@@ -109,20 +135,28 @@ export function TotalsList({ prevMonthName, style }: TotalsListProps) {
             <CellValueText
               {...props}
               style={{ fontWeight: 600 }}
-              formatter={(value, type) => {
-                const v = format(Math.abs(value), type);
-                return value >= 0 ? '-' + v : '+' + v;
-              }}
+              formatter={invertedSignedFormatter}
             />
           )}
         </EnvelopeCellValue>
       </View>
 
       <View>
-        <Block>Available funds</Block>
-        <Block>Overspent in {prevMonthName}</Block>
-        <Block>Budgeted</Block>
-        <Block>For next month</Block>
+        <Block>
+          <Trans>Available funds</Trans>
+        </Block>
+
+        <Block>
+          <Trans>Overspent in {{ prevMonthName }}</Trans>
+        </Block>
+
+        <Block>
+          <Trans>Budgeted</Trans>
+        </Block>
+
+        <Block>
+          <Trans>For next month</Trans>
+        </Block>
       </View>
     </View>
   );

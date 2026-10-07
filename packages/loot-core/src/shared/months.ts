@@ -1,9 +1,10 @@
 // @ts-strict-ignore
 import * as d from 'date-fns';
-import memoizeOne from 'memoize-one';
+import type { Locale } from 'date-fns';
 
-import * as Platform from '../client/platform';
-import { type SyncedPrefs } from '../types/prefs';
+import { memoizeOne } from '#shared/memoize';
+import * as Platform from '#shared/platform';
+import type { SyncedPrefs } from '#types/prefs';
 
 type DateLike = string | Date;
 type Day = 0 | 1 | 2 | 3 | 4 | 5 | 6;
@@ -89,6 +90,25 @@ export function monthFromDate(date: DateLike): string {
   return d.format(_parse(date), 'yyyy-MM');
 }
 
+export function isValidYearMonth(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const month = Number(match[2]);
+  return month >= 1 && month <= 12;
+}
+
+// Whether a value is day-shaped (`yyyy-MM-dd`) rather than month-shaped
+// (`yyyy-MM`).
+export function isValidYearMonthDay(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12) return false;
+  return day >= 1 && day <= d.getDaysInMonth(new Date(year, month - 1));
+}
+
 export function weekFromDate(
   date: DateLike,
   firstDayOfWeekIdx: SyncedPrefs['firstDayOfWeekIdx'],
@@ -162,8 +182,12 @@ export function nextMonth(month: DateLike): string {
   return d.format(d.addMonths(_parse(month), 1), 'yyyy-MM');
 }
 
-export function prevYear(month: DateLike): string {
-  return d.format(d.subMonths(_parse(month), 12), 'yyyy-MM');
+export function prevYear(month: DateLike, format = 'yyyy-MM'): string {
+  return d.format(d.subMonths(_parse(month), 12), format);
+}
+
+export function prevQuarter(month: DateLike, format = 'yyyy-MM'): string {
+  return d.format(d.subMonths(_parse(month), 3), format);
 }
 
 export function prevMonth(month: DateLike): string {
@@ -226,6 +250,10 @@ export function isAfter(month1: DateLike, month2: DateLike): boolean {
 
 export function isCurrentMonth(month: DateLike): boolean {
   return month === currentMonth();
+}
+
+export function isCurrentDay(day: DateLike): boolean {
+  return day === currentDay();
 }
 
 // TODO: This doesn't really fit in this module anymore, should
@@ -389,16 +417,46 @@ export function getYearEnd(month: string): string {
   return getYear(month) + '-12';
 }
 
+export function getQuarter(month: string): number {
+  return Math.floor((Number(month.slice(5, 7)) - 1) / 3) + 1;
+}
+
+export function getQuarterStart(month: string): string {
+  const startMonth = (getQuarter(month) - 1) * 3 + 1;
+  return getYear(month) + '-' + String(startMonth).padStart(2, '0');
+}
+
+export function getQuarterEnd(month: string): string {
+  const endMonth = getQuarter(month) * 3;
+  return getYear(month) + '-' + String(endMonth).padStart(2, '0');
+}
+
 export function sheetForMonth(month: string): string {
   return 'budget' + month.replace('-', '');
 }
 
-export function nameForMonth(month: DateLike): string {
-  return d.format(_parse(month), 'MMMM ‘yy');
+export function nameForMonth(month: DateLike, locale?: Locale): string {
+  return d.format(_parse(month), "MMMM ''yy", { locale });
 }
 
-export function format(month: DateLike, format: string): string {
-  return d.format(_parse(month), format);
+export function format(
+  month: DateLike,
+  format: string,
+  locale?: Locale,
+): string {
+  return d.format(_parse(month), format, { locale });
+}
+
+export function formatDistance(
+  date1: DateLike,
+  date2: DateLike,
+  locale?: Locale,
+  options?: { addSuffix?: boolean; includeSeconds?: boolean },
+): string {
+  return d.formatDistance(_parse(date1), _parse(date2), {
+    locale,
+    ...options,
+  });
 }
 
 export const getDateFormatRegex = memoizeOne((format: string) => {

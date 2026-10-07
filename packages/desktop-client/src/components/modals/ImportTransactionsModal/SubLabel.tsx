@@ -1,7 +1,7 @@
 import React from 'react';
 
-import { theme } from '../../../style';
-import { Text } from '../../common/Text';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
 
 type SubLabelProps = {
   title: string;
@@ -9,7 +9,7 @@ type SubLabelProps = {
 
 export function SubLabel({ title }: SubLabelProps) {
   return (
-    <Text style={{ fontSize: 13, marginBottom: 3, color: theme.pageText }}>
+    <Text size="medium" style={{ marginBottom: 3, color: theme.pageText }}>
       {title}
     </Text>
   );

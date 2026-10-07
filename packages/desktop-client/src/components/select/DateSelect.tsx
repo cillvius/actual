@@ -1,178 +1,299 @@
-// @ts-strict-ignore
-import React, {
+import {
   forwardRef,
   useEffect,
+  useEffectEvent,
   useImperativeHandle,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type ComponentProps,
-  type KeyboardEvent,
-  type MutableRefObject,
 } from 'react';
-
-import { css } from '@emotion/css';
-import { parse, parseISO, format, subDays, addDays, isValid } from 'date-fns';
-import Pikaday from 'pikaday';
-
-import 'pikaday/css/pikaday.css';
-
+import type {
+  ChangeEvent,
+  ComponentProps,
+  JSX,
+  KeyboardEvent,
+  Ref,
+} from 'react';
 import {
+  Calendar,
+  CalendarCell,
+  CalendarGrid,
+  CalendarGridBody,
+  CalendarGridHeader,
+  CalendarHeaderCell,
+  Heading,
+  I18nProvider,
+} from 'react-aria-components';
+import { Trans, useTranslation } from 'react-i18next';
+
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import {
+  SvgCheveronLeft,
+  SvgCheveronRight,
+} from '@actual-app/components/icons/v1';
+import { Input } from '@actual-app/components/input';
+import { Popover } from '@actual-app/components/popover';
+import { styles } from '@actual-app/components/styles';
+import type { CSSProperties } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import {
+  currentDate,
   getDayMonthFormat,
   getDayMonthRegex,
   getShortYearFormat,
   getShortYearRegex,
-  currentDate,
-} from 'loot-core/src/shared/months';
+} from '@actual-app/core/shared/months';
+import { css } from '@emotion/css';
+import { CalendarDate } from '@internationalized/date';
+import { addDays, format, isValid, parse, parseISO, subDays } from 'date-fns';
 
-import { useSyncedPref } from '../../hooks/useSyncedPref';
-import { styles, theme, type CSSProperties } from '../../style';
-import { Input } from '../common/Input';
-import { Popover } from '../common/Popover';
-import { View } from '../common/View';
+import { LabeledCheckbox } from '#components/forms/LabeledCheckbox';
+import { InputField } from '#components/mobile/MobileForms';
+import { useLanguage } from '#hooks/useLocale';
+import { useMergedRefs } from '#hooks/useMergedRefs';
+import { useSyncedPref } from '#hooks/useSyncedPref';
 
-import DateSelectLeft from './DateSelect.left.png';
-import DateSelectRight from './DateSelect.right.png';
+import { getFirstDayOfWeek } from './getFirstDayOfWeek';
+import type { FirstDayOfWeek } from './getFirstDayOfWeek';
+
+function toCalendarDate(date: Date): CalendarDate {
+  return new CalendarDate(
+    date.getFullYear(),
+    date.getMonth() + 1,
+    date.getDate(),
+  );
+}
+
+function fromCalendarDate(date: CalendarDate): Date {
+  return new Date(date.year, date.month - 1, date.day);
+}
+
+const calendarShadow = '0 0px 4px rgba(0, 0, 0, .25)';
 
 const pickerStyles: CSSProperties = {
-  '& .pika-single.actual-date-picker': {
+  '& .react-aria-Calendar': {
     color: theme.calendarText,
     background: theme.calendarBackground,
-    border: 'none',
-    boxShadow: '0 0px 4px rgba(0, 0, 0, .25)',
+    boxShadow: calendarShadow,
     borderRadius: 4,
+    padding: 10,
   },
+  '& .calendar-header': {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+    '& button': {
+      color: 'inherit',
+      background: 'none',
+      border: 'none',
+      borderRadius: 4,
+      padding: 5,
+      cursor: 'pointer',
+      display: 'flex',
+      '&:hover': { backgroundColor: theme.calendarItemBackground },
+    },
+  },
+  '& .calendar-header-title': {
+    fontWeight: 'bold',
+    fontSize: 14,
+    margin: 0,
+    backgroundColor: theme.calendarBackground,
+  },
+  '& .react-aria-CalendarGrid': {
+    borderCollapse: 'collapse',
+  },
+  '& .react-aria-CalendarHeaderCell': {
+    color: theme.calendarItemText,
+    fontWeight: 'normal',
+    textAlign: 'center',
+    padding: '2px 0',
+  },
+  '& .react-aria-CalendarCell': {
+    width: 28,
+    height: 28,
+    lineHeight: '28px',
+    textAlign: 'center',
+    cursor: 'pointer',
+    backgroundColor: theme.calendarItemBackground,
+    color: theme.calendarItemText,
 
-  '& .actual-date-picker': {
-    '& .pika-lendar': {
-      float: 'none',
-      width: 'auto',
+    '&[data-outside-month]': {
+      opacity: 0.4,
     },
-    // month/year
-    '& .pika-label': {
-      backgroundColor: theme.calendarBackground,
-    },
-    // Back/forward buttons
-    '& .pika-prev': {
-      backgroundImage: `url(${DateSelectLeft})`,
-    },
-    '& .pika-next': {
-      backgroundImage: `url(${DateSelectRight})`,
-    },
-    // Day of week
-    '& .pika-table th': {
-      color: theme.calendarItemText,
-      '& abbr': { textDecoration: 'none' },
-    },
-    // Numbered days
-    '& .pika-button': {
-      backgroundColor: theme.calendarItemBackground,
-      color: theme.calendarItemText,
-    },
-    '& .is-today .pika-button': {
+    '&[data-today]': {
       textDecoration: 'underline',
     },
-    '& .is-selected .pika-button': {
+    '&[data-selected]': {
       backgroundColor: theme.calendarSelectedBackground,
-      boxShadow: 'none',
+      borderRadius: 4,
+    },
+    '&[data-disabled]': {
+      opacity: 0.4,
+      cursor: 'default',
+    },
+    '&[data-focus-visible]': {
+      outline: `2px solid ${theme.calendarSelectedBackground}`,
     },
   },
 };
 
 type DatePickerProps = {
   value: string;
-  firstDayOfWeekIdx: string;
   dateFormat: string;
-  onUpdate?: (selectedDate: Date) => void;
-  onSelect: (selectedDate: Date | null) => void;
+  locale: string;
+  firstDayOfWeek: FirstDayOfWeek;
+  onUpdate: (selectedDate: Date) => void;
+  onSelect: (selectedDate: Date) => void;
+  attached?: boolean;
+  embedded?: boolean;
 };
 
 type DatePickerForwardedRef = {
   handleInputKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
 };
 const DatePicker = forwardRef<DatePickerForwardedRef, DatePickerProps>(
-  ({ value, firstDayOfWeekIdx, dateFormat, onUpdate, onSelect }, ref) => {
-    const picker = useRef(null);
-    const mountPoint = useRef(null);
+  (
+    {
+      value,
+      dateFormat,
+      locale,
+      firstDayOfWeek,
+      onUpdate,
+      onSelect,
+      attached,
+      embedded,
+    },
+    ref,
+  ) => {
+    const { t } = useTranslation();
+    const parsedValue = value ? parse(value, dateFormat, currentDate()) : null;
+    const focusedCalendarDate = toCalendarDate(
+      parsedValue && isValid(parsedValue) ? parsedValue : currentDate(),
+    );
+
+    // Controlled so the header arrows can change the visible month without
+    // involving focus: react-aria's own prev/next buttons steal focus from
+    // the text input on press, whose blur closes the picker.
+    const [focusedDate, setFocusedDate] = useState(focusedCalendarDate);
+    const focusedKey = focusedCalendarDate.toString();
+    const [prevFocusedKey, setPrevFocusedKey] = useState(focusedKey);
+    if (prevFocusedKey !== focusedKey) {
+      setPrevFocusedKey(focusedKey);
+      setFocusedDate(focusedCalendarDate);
+    }
 
     useImperativeHandle(
       ref,
       () => ({
         handleInputKeyDown(e) {
+          const jsDate = fromCalendarDate(focusedCalendarDate);
+
           let newDate = null;
           switch (e.key) {
             case 'ArrowLeft':
               e.preventDefault();
-              newDate = subDays(picker.current.getDate(), 1);
+              newDate = subDays(jsDate, 1);
               break;
             case 'ArrowUp':
               e.preventDefault();
-              newDate = subDays(picker.current.getDate(), 7);
+              newDate = subDays(jsDate, 7);
               break;
             case 'ArrowRight':
               e.preventDefault();
-              newDate = addDays(picker.current.getDate(), 1);
+              newDate = addDays(jsDate, 1);
               break;
             case 'ArrowDown':
               e.preventDefault();
-              newDate = addDays(picker.current.getDate(), 7);
+              newDate = addDays(jsDate, 7);
               break;
             default:
           }
 
           if (newDate) {
-            picker.current.setDate(newDate, true);
-            onUpdate?.(newDate);
+            onUpdate(newDate);
           }
         },
       }),
-      [],
+      [focusedCalendarDate, onUpdate],
     );
-
-    useLayoutEffect(() => {
-      picker.current = new Pikaday({
-        theme: 'actual-date-picker',
-        keyboardInput: false,
-        firstDay: parseInt(firstDayOfWeekIdx),
-        defaultDate: value
-          ? parse(value, dateFormat, currentDate())
-          : currentDate(),
-        setDefaultDate: true,
-        toString(date) {
-          return format(date, dateFormat);
-        },
-        parse(dateString) {
-          return parse(dateString, dateFormat, new Date());
-        },
-        onSelect,
-      });
-
-      mountPoint.current.appendChild(picker.current.el);
-
-      return () => {
-        picker.current.destroy();
-      };
-    }, []);
-
-    useEffect(() => {
-      if (picker.current.getDate() !== value) {
-        picker.current.setDate(parse(value, dateFormat, new Date()), true);
-      }
-    }, [value, dateFormat]);
 
     return (
       <View
-        className={css([pickerStyles, { flex: 1 }])}
-        innerRef={mountPoint}
-      />
+        className={css([
+          pickerStyles,
+          attached && {
+            '& .react-aria-Calendar': {
+              borderBottomLeftRadius: 0,
+              borderBottomRightRadius: 0,
+              boxShadow: 'none',
+            },
+          },
+          // Embedded: stretch the grid to the container with equal columns
+          // (same technique as DayRangeCalendar). The container must have a
+          // definite width — a 100%-wide table blows up shrink-to-fit boxes.
+          embedded && {
+            '& .react-aria-Calendar': { width: '100%' },
+            '& .react-aria-CalendarGrid': {
+              width: '100%',
+              tableLayout: 'fixed',
+            },
+            '& .react-aria-CalendarCell': { width: 'auto' },
+          },
+          { flex: 1 },
+        ])}
+        data-date-picker
+        onMouseDown={e => e.preventDefault()}
+      >
+        <I18nProvider locale={locale}>
+          <Calendar
+            value={focusedCalendarDate}
+            focusedValue={focusedDate}
+            onFocusChange={setFocusedDate}
+            firstDayOfWeek={firstDayOfWeek}
+            onChange={date => onSelect(fromCalendarDate(date))}
+          >
+            <View className="calendar-header">
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label={t('Previous month')}
+                onClick={() => setFocusedDate(d => d.subtract({ months: 1 }))}
+              >
+                <SvgCheveronLeft width={16} height={16} />
+              </button>
+              <Heading className="calendar-header-title" />
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label={t('Next month')}
+                onClick={() => setFocusedDate(d => d.add({ months: 1 }))}
+              >
+                <SvgCheveronRight width={16} height={16} />
+              </button>
+            </View>
+            <CalendarGrid>
+              <CalendarGridHeader>
+                {day => (
+                  <CalendarHeaderCell>{day.slice(0, 2)}</CalendarHeaderCell>
+                )}
+              </CalendarGridHeader>
+              <CalendarGridBody>
+                {date => <CalendarCell date={date} />}
+              </CalendarGridBody>
+            </CalendarGrid>
+          </Calendar>
+        </I18nProvider>
+      </View>
     );
   },
 );
 
 DatePicker.displayName = 'DatePicker';
 
-function defaultShouldSaveFromKey(e) {
+function defaultShouldSaveFromKey(e: KeyboardEvent<HTMLInputElement>) {
   return e.key === 'Enter';
 }
 
@@ -184,16 +305,17 @@ type DateSelectProps = {
   isOpen?: boolean;
   embedded?: boolean;
   dateFormat: string;
-  focused?: boolean;
   openOnFocus?: boolean;
-  inputRef?: MutableRefObject<HTMLInputElement>;
+  ref?: Ref<HTMLInputElement>;
   shouldSaveFromKey?: (e: KeyboardEvent<HTMLInputElement>) => boolean;
   clearOnBlur?: boolean;
   onUpdate?: (selectedDate: string) => void;
   onSelect: (selectedDate: string) => void;
+  transferDateSyncChecked?: boolean;
+  onTransferDateSyncChange?: (checked: boolean) => void;
 };
 
-export function DateSelect({
+function DateSelectDesktop({
   id,
   containerProps,
   inputProps,
@@ -201,13 +323,14 @@ export function DateSelect({
   isOpen,
   embedded,
   dateFormat = 'yyyy-MM-dd',
-  focused,
   openOnFocus = true,
-  inputRef: originalInputRef,
+  ref,
   shouldSaveFromKey = defaultShouldSaveFromKey,
   clearOnBlur = true,
   onUpdate,
   onSelect,
+  transferDateSyncChecked,
+  onTransferDateSyncChange,
 }: DateSelectProps) {
   const parsedDefaultValue = useMemo(() => {
     if (defaultValue) {
@@ -219,60 +342,50 @@ export function DateSelect({
     return '';
   }, [defaultValue, dateFormat]);
 
-  const picker = useRef(null);
+  const picker = useRef<DatePickerForwardedRef | null>(null);
   const [value, setValue] = useState(parsedDefaultValue);
   const [open, setOpen] = useState(embedded || isOpen || false);
-  const inputRef = useRef(null);
+  const innerRef = useRef<HTMLInputElement | null>(null);
+  const mergedRef = useMergedRefs<HTMLInputElement>(innerRef, ref);
 
-  useLayoutEffect(() => {
-    if (originalInputRef) {
-      originalInputRef.current = inputRef.current;
-    }
-  }, []);
-
-  // This is confusing, so let me explain: `selectedValue` should be
-  // renamed to `currentValue`. It represents the current highlighted
-  // value in the date select and always changes as the user moves
-  // around. `userSelectedValue` represents the last value that the
-  // user actually selected (with enter or click). Having both allows
-  // us to make various UX decisions
   const [selectedValue, setSelectedValue] = useState(value);
-  const userSelectedValue = useRef(selectedValue);
 
   const [_firstDayOfWeekIdx] = useSyncedPref('firstDayOfWeekIdx');
-  const firstDayOfWeekIdx = _firstDayOfWeekIdx || '0';
+  const firstDayOfWeek = getFirstDayOfWeek(_firstDayOfWeekIdx);
 
-  useEffect(() => {
-    userSelectedValue.current = value;
-  }, [value]);
+  const locale = useLanguage();
 
   useEffect(() => setValue(parsedDefaultValue), [parsedDefaultValue]);
 
-  useEffect(() => {
-    if (getDayMonthRegex(dateFormat).test(value)) {
+  const onUpdateEffect = useEffectEvent((newValue: string) => {
+    if (getDayMonthRegex(dateFormat).test(newValue)) {
       // Support only entering the month and day (4/5). This is complex
       // because of the various date formats - we need to derive
       // the right day/month format from it
-      const test = parse(value, getDayMonthFormat(dateFormat), new Date());
+      const test = parse(newValue, getDayMonthFormat(dateFormat), new Date());
       if (isValid(test)) {
         onUpdate?.(format(test, 'yyyy-MM-dd'));
         setSelectedValue(format(test, dateFormat));
       }
-    } else if (getShortYearRegex(dateFormat).test(value)) {
+    } else if (getShortYearRegex(dateFormat).test(newValue)) {
       // Support entering the year as only two digits (4/5/19)
-      const test = parse(value, getShortYearFormat(dateFormat), new Date());
+      const test = parse(newValue, getShortYearFormat(dateFormat), new Date());
       if (isValid(test)) {
         onUpdate?.(format(test, 'yyyy-MM-dd'));
         setSelectedValue(format(test, dateFormat));
       }
     } else {
-      const test = parse(value, dateFormat, new Date());
+      const test = parse(newValue, dateFormat, new Date());
       if (isValid(test)) {
         const date = format(test, 'yyyy-MM-dd');
         onUpdate?.(date);
-        setSelectedValue(value);
+        setSelectedValue(newValue);
       }
     }
+  });
+
+  useEffect(() => {
+    onUpdateEffect(value);
   }, [value]);
 
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
@@ -283,7 +396,7 @@ export function DateSelect({
       !e.altKey &&
       open
     ) {
-      picker.current.handleInputKeyDown(e);
+      picker.current?.handleInputKeyDown(e);
     } else if (e.key === 'Escape') {
       setValue(parsedDefaultValue);
       setSelectedValue(parsedDefaultValue);
@@ -301,11 +414,13 @@ export function DateSelect({
         onUpdate?.(defaultValue);
       }
     } else if (shouldSaveFromKey(e)) {
-      setValue(selectedValue);
-      setOpen(false);
+      if (selectedValue) {
+        setValue(selectedValue);
+        const date = parse(selectedValue, dateFormat, new Date());
+        onSelect(format(date, 'yyyy-MM-dd'));
+      }
 
-      const date = parse(selectedValue, dateFormat, new Date());
-      onSelect(format(date, 'yyyy-MM-dd'));
+      setOpen(false);
 
       if (open && e.key === 'Enter') {
         // This stops the event from propagating up
@@ -317,30 +432,30 @@ export function DateSelect({
       onKeyDown?.(e);
     } else if (!open) {
       setOpen(true);
-      if (inputRef.current) {
-        inputRef.current.setSelectionRange(0, 10000);
+      if (innerRef.current) {
+        innerRef.current.setSelectionRange(0, 10000);
       }
     }
   }
 
-  function onChange(e) {
+  function onChange(e: ChangeEvent<HTMLInputElement>) {
     setValue(e.target.value);
   }
 
-  const maybeWrapTooltip = content => {
+  const maybeWrapTooltip = (content: JSX.Element) => {
     if (embedded) {
       return open ? content : null;
     }
 
     return (
       <Popover
-        triggerRef={inputRef}
+        triggerRef={innerRef}
         placement="bottom start"
         offset={2}
         isOpen={open}
         isNonModal
         onOpenChange={() => setOpen(false)}
-        style={{ ...styles.popover, minWidth: 225 }}
+        style={styles.popover}
         data-testid="date-select-tooltip"
       >
         {content}
@@ -352,9 +467,8 @@ export function DateSelect({
     <View {...containerProps}>
       <Input
         id={id}
-        focused={focused}
         {...inputProps}
-        inputRef={inputRef}
+        ref={mergedRef}
         value={value}
         onPointerUp={() => {
           if (!embedded) {
@@ -370,18 +484,31 @@ export function DateSelect({
           inputProps?.onFocus?.(e);
         }}
         onBlur={e => {
+          // react-aria moves focus into the calendar when it's clicked; keep
+          // the picker open and pull focus back so keyboard entry still works.
+          if (
+            e.relatedTarget instanceof Element &&
+            e.relatedTarget.closest('[data-date-picker]')
+          ) {
+            innerRef.current?.focus();
+            return;
+          }
           if (!embedded) {
             setOpen(false);
           }
           inputProps?.onBlur?.(e);
 
           if (clearOnBlur) {
-            // If value is empty, that drives what gets selected.
-            // Otherwise the input is reset to whatever is already
-            // selected
+            // If value is empty, reset to previously selected value
+            // instead of saving an empty date (which the server rejects).
             if (value === '') {
-              setSelectedValue(null);
-              onSelect(null);
+              if (selectedValue) {
+                setValue(selectedValue);
+                const date = parse(selectedValue, dateFormat, new Date());
+                if (date instanceof Date && !isNaN(date.valueOf())) {
+                  onSelect(format(date, 'yyyy-MM-dd'));
+                }
+              }
             } else {
               setValue(selectedValue || '');
 
@@ -394,22 +521,78 @@ export function DateSelect({
         }}
       />
       {maybeWrapTooltip(
-        <DatePicker
-          ref={picker}
-          value={selectedValue}
-          firstDayOfWeekIdx={firstDayOfWeekIdx}
-          dateFormat={dateFormat}
-          onUpdate={date => {
-            setSelectedValue(format(date, dateFormat));
-            onUpdate?.(format(date, 'yyyy-MM-dd'));
-          }}
-          onSelect={date => {
-            setValue(format(date, dateFormat));
-            onSelect(format(date, 'yyyy-MM-dd'));
-            setOpen(false);
-          }}
-        />,
+        <View
+          style={
+            onTransferDateSyncChange
+              ? { borderRadius: 4, boxShadow: calendarShadow }
+              : undefined
+          }
+        >
+          <DatePicker
+            ref={picker}
+            value={selectedValue}
+            dateFormat={dateFormat}
+            locale={locale}
+            firstDayOfWeek={firstDayOfWeek}
+            attached={!!onTransferDateSyncChange}
+            embedded={embedded}
+            onUpdate={date => {
+              setSelectedValue(format(date, dateFormat));
+              onUpdate?.(format(date, 'yyyy-MM-dd'));
+            }}
+            onSelect={date => {
+              setValue(format(date, dateFormat));
+              onSelect(format(date, 'yyyy-MM-dd'));
+              setOpen(false);
+            }}
+          />
+          {onTransferDateSyncChange && (
+            <LabeledCheckbox
+              id={`${id ?? 'date-select'}-transfer-date-sync`}
+              checked={transferDateSyncChecked}
+              onChange={e => onTransferDateSyncChange(e.target.checked)}
+              onMouseDown={e => e.preventDefault()}
+              style={{
+                padding: '6px 8px',
+                borderBottomLeftRadius: 4,
+                borderBottomRightRadius: 4,
+                backgroundColor: theme.calendarBackground,
+                color: theme.calendarText,
+              }}
+            >
+              <Trans>Sync both transfer dates</Trans>
+            </LabeledCheckbox>
+          )}
+        </View>,
       )}
     </View>
   );
+}
+
+function DateSelectMobile(props: DateSelectProps) {
+  const { style: inputStyle, ...restInputProps } = props.inputProps ?? {};
+  return (
+    <View>
+      <InputField
+        id={props.id}
+        type="date"
+        value={props.value ?? ''}
+        onChange={event => {
+          props.onSelect(event.target.value);
+        }}
+        style={{ height: 28, ...inputStyle }}
+        {...restInputProps}
+      />
+    </View>
+  );
+}
+
+export function DateSelect(props: DateSelectProps) {
+  const { isNarrowWidth } = useResponsive();
+
+  if (isNarrowWidth) {
+    return <DateSelectMobile {...props} />;
+  }
+
+  return <DateSelectDesktop {...props} />;
 }

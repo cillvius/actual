@@ -1,60 +1,76 @@
-import React, {
-  useRef,
-  type ComponentProps,
-  type ReactNode,
-  type CSSProperties,
-} from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import type { CSSProperties, ReactNode, RefObject } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { useContextMenu } from '../../hooks/useContextMenu';
-import { useIsInViewport } from '../../hooks/useIsInViewport';
-import { useNavigate } from '../../hooks/useNavigate';
-import { theme } from '../../style';
-import { Menu } from '../common/Menu';
-import { MenuButton } from '../common/MenuButton';
-import { Popover } from '../common/Popover';
-import { View } from '../common/View';
-import { useResponsive } from '../responsive/ResponsiveProvider';
+import { Button } from '@actual-app/components/button';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { SvgDotsHorizontalTriple } from '@actual-app/components/icons/v1';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+
+import { useContextMenu } from '#hooks/useContextMenu';
+import { useIsInViewport } from '#hooks/useIsInViewport';
+import { useNavigate } from '#hooks/useNavigate';
+import { pushModal } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
+import {
+  useCopyDashboardWidgetMutation,
+  useRemoveDashboardWidgetMutation,
+} from '#reports/mutations';
 
 import { NON_DRAGGABLE_AREA_CLASS_NAME } from './constants';
 
 type ReportCardProps = {
+  widgetId: string;
   isEditing?: boolean;
   disableClick?: boolean;
   to?: string;
   children: ReactNode;
-  menuItems?: ComponentProps<typeof Menu>['items'];
-  onMenuSelect?: ComponentProps<typeof Menu>['onMenuSelect'];
   size?: number;
   style?: CSSProperties;
+  onRename?: () => void;
+  contextMenuTriggerRef?: RefObject<HTMLDivElement | null>;
 };
 
 export function ReportCard({
+  widgetId,
   isEditing,
   disableClick,
   to,
-  menuItems,
-  onMenuSelect,
   children,
   size = 1,
   style,
+  onRename,
+  contextMenuTriggerRef,
 }: ReportCardProps) {
-  const ref = useRef(null);
-  const isInViewport = useIsInViewport(ref);
+  // The card element is tracked as state (through a callback ref) so the
+  // viewport observer follows it when it is remounted, which happens when
+  // toggling edit mode swaps the clickable wrapper in and out.
+  const [cardElement, setCardElement] = useState<HTMLDivElement | null>(null);
+  const isInViewport = useIsInViewport(cardElement);
+  const [hasRendered, setHasRendered] = useState(false);
   const navigate = useNavigate();
   const { isNarrowWidth } = useResponsive();
   const containerProps = {
     flex: isNarrowWidth ? '1 1' : `0 0 calc(${size * 100}% / 3 - 20px)`,
   };
 
+  useEffect(() => {
+    if (isInViewport && !hasRendered) {
+      setHasRendered(true);
+    }
+  }, [isInViewport, hasRendered]);
+
   const layoutProps = {
     isEditing,
-    menuItems,
-    onMenuSelect,
+    widgetId,
+    onRename,
+    contextMenuTriggerRef,
   };
 
   const content = (
     <View
-      ref={ref}
+      ref={setCardElement}
       style={{
         backgroundColor: theme.tableBackground,
         borderBottomLeftRadius: 2,
@@ -88,26 +104,27 @@ export function ReportCard({
       {/* we render the content only if it is in the viewport
       this reduces the amount of concurrent server api calls and thus
       has a better performance */}
-      {isInViewport ? children : null}
+      {isInViewport || hasRendered ? children : null}
     </View>
   );
 
-  if (to) {
+  if (to && !isEditing && !disableClick) {
     return (
       <Layout {...layoutProps}>
-        <View
-          role="button"
-          onClick={isEditing || disableClick ? undefined : () => navigate(to)}
+        <Button
+          variant="bare"
+          onPress={() => navigate(to, { state: { goBack: true } })}
           style={{
             height: '100%',
             width: '100%',
-            ':hover': {
-              cursor: 'pointer',
-            },
+            background: 'transparent',
+            padding: 0,
+            textAlign: 'left',
+            overflow: 'visible',
           }}
         >
           {content}
-        </View>
+        </Button>
       </Layout>
     );
   }
@@ -117,25 +134,71 @@ export function ReportCard({
 
 type LayoutProps = {
   children: ReactNode;
-} & Pick<ReportCardProps, 'isEditing' | 'menuItems' | 'onMenuSelect'>;
+} & Pick<
+  ReportCardProps,
+  'isEditing' | 'widgetId' | 'onRename' | 'contextMenuTriggerRef'
+>;
 
-function Layout({ children, isEditing, menuItems, onMenuSelect }: LayoutProps) {
-  const triggerRef = useRef(null);
-  const viewRef = useRef(null);
+function Layout({
+  children,
+  isEditing,
+  widgetId,
+  onRename,
+  contextMenuTriggerRef,
+}: LayoutProps) {
+  const { t } = useTranslation();
+  const dispatch = useDispatch();
 
-  const {
-    setMenuOpen,
-    menuOpen,
-    handleContextMenu,
-    resetPosition,
-    position,
-    asContextMenu,
-  } = useContextMenu();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const internalViewRef = useRef<HTMLDivElement>(null);
+  const viewRef = contextMenuTriggerRef || internalViewRef;
+
+  const removeDashboardWidgetMutation = useRemoveDashboardWidgetMutation();
+  const copyDashboardWidgetMutation = useCopyDashboardWidgetMutation();
+
+  useContextMenu({
+    triggerRef: viewRef,
+    items: [
+      onRename && {
+        name: 'rename',
+        text: t('Rename'),
+        onClick: onRename,
+        order: 1,
+      },
+      {
+        name: 'remove',
+        text: t('Remove'),
+        onClick: () => removeDashboardWidgetMutation.mutate({ id: widgetId }),
+        order: 1,
+      },
+      {
+        name: 'copy',
+        text: t('Copy to dashboard'),
+        onClick: () => {
+          dispatch(
+            pushModal({
+              modal: {
+                name: 'copy-widget-to-dashboard',
+                options: {
+                  onSelect: targetDashboardId => {
+                    copyDashboardWidgetMutation.mutate({
+                      id: widgetId,
+                      targetDashboardPageId: targetDashboardId,
+                    });
+                  },
+                },
+              },
+            }),
+          );
+        },
+        order: 1,
+      },
+    ],
+  });
 
   return (
     <View
       ref={viewRef}
-      onContextMenu={handleContextMenu}
       style={{
         display: 'block',
         height: '100%',
@@ -148,46 +211,42 @@ function Layout({ children, isEditing, menuItems, onMenuSelect }: LayoutProps) {
         },
       }}
     >
-      {menuItems && (
-        <>
-          {isEditing && (
-            <View
-              className={[
-                menuOpen ? undefined : 'hover-visible',
-                NON_DRAGGABLE_AREA_CLASS_NAME,
-              ].join(' ')}
-              style={{
-                position: 'absolute',
-                top: 7,
-                right: 3,
-                zIndex: 1,
-              }}
-            >
-              <MenuButton
-                ref={triggerRef}
-                onPress={() => {
-                  resetPosition();
-                  setMenuOpen(true);
-                }}
-              />
-            </View>
-          )}
-
-          <Popover
-            triggerRef={asContextMenu ? viewRef : triggerRef}
-            isOpen={Boolean(menuOpen)}
-            onOpenChange={() => setMenuOpen(false)}
-            isNonModal
-            placement={asContextMenu ? 'bottom start' : 'bottom end'}
-            {...position}
+      {isEditing && (
+        <View
+          className={['hover-visible', NON_DRAGGABLE_AREA_CLASS_NAME].join(' ')}
+          style={{
+            position: 'absolute',
+            top: 7,
+            right: 3,
+            zIndex: 1,
+          }}
+        >
+          <Button
+            ref={triggerRef}
+            variant="bare"
+            aria-label={t('Menu')}
+            onPress={() => {
+              if (viewRef.current) {
+                const rect = triggerRef.current?.getBoundingClientRect();
+                const clientX = rect ? rect.left : 0;
+                const clientY = rect ? rect.bottom : 0;
+                viewRef.current.dispatchEvent(
+                  new MouseEvent('contextmenu', {
+                    bubbles: true,
+                    clientX,
+                    clientY,
+                  }),
+                );
+              }
+            }}
           >
-            <Menu
-              className={NON_DRAGGABLE_AREA_CLASS_NAME}
-              onMenuSelect={onMenuSelect}
-              items={menuItems}
+            <SvgDotsHorizontalTriple
+              width={15}
+              height={15}
+              style={{ transform: 'rotateZ(90deg)' }}
             />
-          </Popover>
-        </>
+          </Button>
+        </View>
       )}
 
       {children}

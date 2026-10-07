@@ -1,20 +1,20 @@
 import { forwardRef, useRef } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { Trans, useTranslation } from 'react-i18next';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 
+import { Button } from '@actual-app/components/button';
+import { SvgHelp } from '@actual-app/components/icons/v2';
+import { Menu } from '@actual-app/components/menu';
+import { Popover } from '@actual-app/components/popover';
+import { SpaceBetween } from '@actual-app/components/space-between';
 import { useToggle } from 'usehooks-ts';
 
-import { pushModal } from 'loot-core/client/actions/modals';
+import { useFeatureFlag } from '#hooks/useFeatureFlag';
+import { pushModal } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
 
-import { useFeatureFlag } from '../hooks/useFeatureFlag';
-import { SvgHelp } from '../icons/v2/Help';
-import { useDispatch } from '../redux';
-
-import { Button } from './common/Button2';
-import { Menu } from './common/Menu';
-import { Popover } from './common/Popover';
-import { SpaceBetween } from './common/SpaceBetween';
+import { useTour } from './tour/TourProvider';
 
 const getPageDocs = (page: string) => {
   switch (page) {
@@ -30,6 +30,8 @@ const getPageDocs = (page: string) => {
       return 'https://actualbudget.org/docs/budgeting/rules';
     case '/settings':
       return 'https://actualbudget.org/docs/settings';
+    case '/notifications':
+      return 'https://actualbudget.org/docs/notifications';
     default:
       // All pages under /accounts, plus any missing pages
       return 'https://actualbudget.org/docs';
@@ -40,7 +42,12 @@ function openDocsForCurrentPage() {
   window.Actual.openURLInBrowser(getPageDocs(window.location.pathname));
 }
 
-type HelpMenuItem = 'docs' | 'keyboard-shortcuts' | 'goal-templates';
+type HelpMenuItem =
+  | 'docs'
+  | 'discord'
+  | 'keyboard-shortcuts'
+  | 'start-tour'
+  | 'goal-templates';
 
 type HelpButtonProps = {
   onPress?: () => void;
@@ -54,6 +61,7 @@ const HelpButton = forwardRef<HTMLButtonElement, HelpButtonProps>(
         variant="bare"
         ref={ref}
         onPress={onPress}
+        data-testid="help-menu-button"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -77,22 +85,31 @@ export const HelpMenu = () => {
 
   const dispatch = useDispatch();
   const page = useLocation().pathname;
+  const { startTour } = useTour();
 
   const handleItemSelect = (item: HelpMenuItem) => {
     switch (item) {
       case 'docs':
         openDocsForCurrentPage();
         break;
+      case 'discord':
+        window.Actual.openURLInBrowser('https://discord.gg/pRYNYr4W5A');
+        break;
       case 'keyboard-shortcuts':
-        dispatch(pushModal('keyboard-shortcuts'));
+        dispatch(pushModal({ modal: { name: 'keyboard-shortcuts' } }));
+        break;
+      case 'start-tour':
+        startTour();
         break;
       case 'goal-templates':
-        dispatch(pushModal('goal-templates'));
+        dispatch(pushModal({ modal: { name: 'goal-templates' } }));
         break;
+      default:
+        throw new Error(`Unrecognized menu option: ${String(item)}`);
     }
   };
 
-  useHotkeys('shift+?', () => setMenuOpen(true));
+  useHotkeys('?', () => setMenuOpen(true), { useKey: true });
 
   return (
     <SpaceBetween>
@@ -115,7 +132,12 @@ export const HelpMenu = () => {
               name: 'docs',
               text: t('Documentation'),
             },
+            {
+              name: 'discord',
+              text: t('Community support (Discord)'),
+            },
             { name: 'keyboard-shortcuts', text: t('Keyboard shortcuts') },
+            { name: 'start-tour', text: t('Take a tour') },
             ...(showGoalTemplates && page === '/budget'
               ? [{ name: 'goal-templates', text: t('Goal templates') }]
               : []),

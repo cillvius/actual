@@ -1,19 +1,21 @@
-import React, { type CSSProperties } from 'react';
+import React from 'react';
+import type { CSSProperties } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
+import { AlignedText } from '@actual-app/components/aligned-text';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { Tooltip } from '@actual-app/components/tooltip';
+import { View } from '@actual-app/components/view';
 import { css } from '@emotion/css';
 
-import { trackingBudget } from 'loot-core/src/client/queries';
-
-import { theme, styles } from '../../../../style';
-import { AlignedText } from '../../../common/AlignedText';
-import { Text } from '../../../common/Text';
-import { Tooltip } from '../../../common/Tooltip';
-import { View } from '../../../common/View';
-import { PrivacyFilter } from '../../../PrivacyFilter';
-import { useFormat } from '../../../spreadsheet/useFormat';
-import { makeAmountFullStyle } from '../../util';
-import { useTrackingSheetValue } from '../TrackingBudgetComponents';
+import { useTrackingSheetValue } from '#components/budget/tracking/TrackingBudgetComponents';
+import { makeAmountFullStyle } from '#components/budget/util';
+import { FinancialText } from '#components/FinancialText';
+import { PrivacyFilter } from '#components/PrivacyFilter';
+import { useFormat } from '#hooks/useFormat';
+import { trackingBudget } from '#spreadsheet/bindings';
 
 type SavedProps = {
   projected: boolean;
@@ -48,22 +50,17 @@ export function Saved({ projected, style }: SavedProps) {
             <AlignedText
               left={t('Projected savings:')}
               right={
-                <Text
-                  style={{
-                    ...makeAmountFullStyle(budgetedSaved),
-                    ...styles.tnum,
-                  }}
-                >
+                <FinancialText style={makeAmountFullStyle(budgetedSaved)}>
                   {format(budgetedSaved, 'financial-with-sign')}
-                </Text>
+                </FinancialText>
               }
             />
             <AlignedText
               left={t('Difference:')}
               right={
-                <Text style={{ ...makeAmountFullStyle(diff), ...styles.tnum }}>
+                <FinancialText style={makeAmountFullStyle(diff)}>
                   {format(diff, 'financial-with-sign')}
-                </Text>
+                </FinancialText>
               }
             />
           </>
@@ -77,13 +74,15 @@ export function Saved({ projected, style }: SavedProps) {
           className={css({
             fontSize: 25,
             color: projected
-              ? theme.warningText
+              ? theme.templateNumberUnderFunded
               : isNegative
-                ? theme.errorTextDark
-                : theme.upcomingText,
+                ? theme.budgetNumberNegative
+                : theme.templateNumberFunded,
           })}
         >
-          <PrivacyFilter>{format(saved, 'financial')}</PrivacyFilter>
+          <PrivacyFilter>
+            <FinancialText>{format(saved, 'financial')}</FinancialText>
+          </PrivacyFilter>
         </View>
       </Tooltip>
     </View>

@@ -1,16 +1,23 @@
 // @ts-strict-ignore
-import React, { type CSSProperties, useState } from 'react';
+import React, { useState } from 'react';
+import type { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import * as monthUtils from 'loot-core/src/shared/months';
+import {
+  SvgCheveronLeft,
+  SvgCheveronRight,
+} from '@actual-app/components/icons/v1';
+import { SvgCalendar } from '@actual-app/components/icons/v2';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import * as monthUtils from '@actual-app/core/shared/months';
 
-import { useResizeObserver } from '../../hooks/useResizeObserver';
-import { SvgCalendar } from '../../icons/v2';
-import { styles, theme } from '../../style';
-import { Link } from '../common/Link';
-import { View } from '../common/View';
+import { Link } from '#components/common/Link';
+import { useLocale } from '#hooks/useLocale';
+import { useResizeObserver } from '#hooks/useResizeObserver';
 
-import { type MonthBounds } from './MonthsContext';
+import type { MonthBounds } from './MonthsContext';
 
 type MonthPickerProps = {
   startMonth: string;
@@ -27,6 +34,7 @@ export const MonthPicker = ({
   style,
   onSelect,
 }: MonthPickerProps) => {
+  const locale = useLocale();
   const { t } = useTranslation();
   const [hoverId, setHoverId] = useState(null);
   const [targetMonthCount, setTargetMonthCount] = useState(12);
@@ -42,11 +50,11 @@ export const MonthPicker = ({
   const range = monthUtils.rangeInclusive(
     monthUtils.subMonths(
       firstSelectedMonth,
-      targetMonthCount / 2 - numDisplayed / 2,
+      Math.floor(targetMonthCount / 2 - numDisplayed / 2),
     ),
     monthUtils.addMonths(
       lastSelectedMonth,
-      targetMonthCount / 2 - numDisplayed / 2,
+      Math.floor(targetMonthCount / 2 - numDisplayed / 2),
     ),
   );
 
@@ -100,8 +108,26 @@ export const MonthPicker = ({
             />
           </View>
         </Link>
+        <Link
+          variant="button"
+          buttonVariant="bare"
+          onPress={() => onSelect(monthUtils.prevMonth(startMonth))}
+          style={{
+            padding: '3px 3px',
+            marginRight: '12px',
+          }}
+        >
+          <View title={t('Previous month')}>
+            <SvgCheveronLeft
+              style={{
+                width: 16,
+                height: 16,
+              }}
+            />
+          </View>
+        </Link>
         {range.map((month, idx) => {
-          const monthName = monthUtils.format(month, 'MMM');
+          const monthName = monthUtils.format(month, 'MMM', locale);
           const selected =
             idx >= firstSelectedIndex && idx <= lastSelectedIndex;
 
@@ -125,7 +151,10 @@ export const MonthPicker = ({
           return (
             <View
               key={month}
+              data-testid={selected ? 'selected-budget-month' : undefined}
+              data-month={selected ? month : undefined}
               style={{
+                alignItems: 'center',
                 padding: '3px 3px',
                 width: size === 'big' ? '35px' : '20px',
                 textAlign: 'center',
@@ -139,7 +168,7 @@ export const MonthPicker = ({
                 }),
                 ...styles.smallText,
                 ...(selected && {
-                  backgroundColor: theme.tableBorderHover,
+                  backgroundColor: theme.buttonPrimaryBackground,
                   color: theme.buttonPrimaryText,
                 }),
                 ...((hovered || selected) && {
@@ -168,7 +197,7 @@ export const MonthPicker = ({
                   }),
                 ...(hovered &&
                   selected && {
-                    backgroundColor: theme.tableBorderHover,
+                    backgroundColor: theme.buttonPrimaryBackground,
                   }),
                 ...((idx === firstSelectedIndex ||
                   (idx === hoverId && !selected)) && {
@@ -186,26 +215,46 @@ export const MonthPicker = ({
               onMouseEnter={() => setHoverId(idx)}
               onMouseLeave={() => setHoverId(null)}
             >
-              {size === 'small' ? monthName[0] : monthName}
-              {showYearHeader && (
-                <View
-                  style={{
-                    position: 'absolute',
-                    top: -14,
-                    left: 0,
-                    fontSize: 10,
-                    fontWeight: 'bold',
-                    color: isMonthBudgeted
-                      ? theme.pageText
-                      : theme.pageTextSubdued,
-                  }}
-                >
-                  {year}
-                </View>
-              )}
+              <View>
+                {size === 'small' ? monthName[0] : monthName}
+                {showYearHeader && (
+                  <View
+                    style={{
+                      position: 'absolute',
+                      top: -16,
+                      left: 0,
+                      fontSize: 10,
+                      fontWeight: 'bold',
+                      color: isMonthBudgeted
+                        ? theme.pageText
+                        : theme.pageTextSubdued,
+                    }}
+                  >
+                    {year}
+                  </View>
+                )}
+              </View>
             </View>
           );
         })}
+        <Link
+          variant="button"
+          buttonVariant="bare"
+          onPress={() => onSelect(monthUtils.nextMonth(startMonth))}
+          style={{
+            padding: '3px 3px',
+            marginLeft: '12px',
+          }}
+        >
+          <View title={t('Next month')}>
+            <SvgCheveronRight
+              style={{
+                width: 16,
+                height: 16,
+              }}
+            />
+          </View>
+        </Link>
         {/*Keep range centered*/}
         <span
           style={{

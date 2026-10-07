@@ -1,15 +1,15 @@
 import React from 'react';
 import { Trans } from 'react-i18next';
 
-import { pushModal } from 'loot-core/client/actions';
+import { Button } from '@actual-app/components/button';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
 
-import { useMetadataPref } from '../../hooks/useMetadataPref';
-import { useDispatch } from '../../redux';
-import { theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Link } from '../common/Link';
-import { Text } from '../common/Text';
-import { useServerURL } from '../ServerContext';
+import { Link } from '#components/common/Link';
+import { useServerURL } from '#components/ServerContext';
+import { useMetadataPref } from '#hooks/useMetadataPref';
+import { pushModal } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
 
 import { Setting } from './UI';
 
@@ -21,7 +21,11 @@ export function EncryptionSettings() {
   const missingCryptoAPI = !(window.crypto && crypto.subtle);
 
   function onChangeKey() {
-    dispatch(pushModal('create-encryption-key', { recreate: true }));
+    dispatch(
+      pushModal({
+        modal: { name: 'create-encryption-key', options: { recreate: true } },
+      }),
+    );
   }
 
   return encryptKeyId ? (
@@ -37,9 +41,11 @@ export function EncryptionSettings() {
           <Trans>End-to-end Encryption is turned on.</Trans>
         </Text>{' '}
         <Trans>
-          Your data is encrypted with a key that only you have before sending it
-          it out to the cloud. Local data remains unencrypted so if you forget
-          your password you can re-encrypt it.
+          Your budget data is encrypted with a key that only you have before
+          sending it out to the cloud. Local data remains unencrypted so if you
+          forget your password you can re-encrypt it. Note: bank sync operations
+          and secrets stored on the server are not covered by end-to-end
+          encryption.
         </Trans>{' '}
         <Link
           variant="external"
@@ -61,7 +67,7 @@ export function EncryptionSettings() {
       <Text>
         <Trans>
           <strong>End-to-end encryption</strong> is not available when making an
-          unencrypted connection to a remote server. You’ll need to enable HTTPS
+          unencrypted connection to a remote server. You'll need to enable HTTPS
           on your server to use end-to-end encryption. This problem may also
           occur if your browser is too old to work with Actual.
         </Trans>{' '}
@@ -77,7 +83,15 @@ export function EncryptionSettings() {
   ) : serverURL ? (
     <Setting
       primaryAction={
-        <Button onPress={() => dispatch(pushModal('create-encryption-key'))}>
+        <Button
+          onPress={() =>
+            dispatch(
+              pushModal({
+                modal: { name: 'create-encryption-key', options: {} },
+              }),
+            )
+          }
+        >
           <Trans>Enable encryption</Trans>
         </Button>
       }
@@ -85,7 +99,7 @@ export function EncryptionSettings() {
       <Text>
         <Trans>
           <strong>End-to-end encryption</strong> is not enabled. Any data on the
-          server is still protected by the server password, but it’s not
+          server is still protected by the server password, but it's not
           end-to-end encrypted which means the server owners have the ability to
           read it. If you want, you can use an additional password to encrypt
           your data on the server.

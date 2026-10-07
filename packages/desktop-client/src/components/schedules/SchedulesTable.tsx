@@ -1,35 +1,32 @@
 // @ts-strict-ignore
-import React, { useRef, useState, useMemo, type CSSProperties } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import {
-  type ScheduleStatusType,
-  type ScheduleStatuses,
-} from 'loot-core/src/client/data-hooks/schedules';
-import { format as monthUtilFormat } from 'loot-core/src/shared/months';
-import { getNormalisedString } from 'loot-core/src/shared/normalisation';
-import { getScheduledAmount } from 'loot-core/src/shared/schedules';
-import { integerToCurrency } from 'loot-core/src/shared/util';
-import { type ScheduleEntity } from 'loot-core/src/types/models';
+import { Button } from '@actual-app/components/button';
+import { SvgDotsHorizontalTriple } from '@actual-app/components/icons/v1';
+import { SvgCheck } from '@actual-app/components/icons/v2';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { format as monthUtilFormat } from '@actual-app/core/shared/months';
+import { getNormalisedString } from '@actual-app/core/shared/normalisation';
+import { getScheduledAmount } from '@actual-app/core/shared/schedules';
+import type { ScheduleStatuses } from '@actual-app/core/shared/schedules';
+import type { ScheduleEntity } from '@actual-app/core/types/models';
 
-import { useAccounts } from '../../hooks/useAccounts';
-import { useContextMenu } from '../../hooks/useContextMenu';
-import { useDateFormat } from '../../hooks/useDateFormat';
-import { usePayees } from '../../hooks/usePayees';
-import { SvgDotsHorizontalTriple } from '../../icons/v1';
-import { SvgCheck } from '../../icons/v2';
-import { theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Menu } from '../common/Menu';
-import { Popover } from '../common/Popover';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { PrivacyFilter } from '../PrivacyFilter';
-import { Table, TableHeader, Row, Field, Cell } from '../table';
-import { DisplayId } from '../util/DisplayId';
+import { FinancialText } from '#components/FinancialText';
+import { PrivacyFilter } from '#components/PrivacyFilter';
+import { Cell, Field, Row, Table, TableHeader } from '#components/table';
+import { DisplayId } from '#components/util/DisplayId';
+import { useAccounts } from '#hooks/useAccounts';
+import { useContextMenu } from '#hooks/useContextMenu';
+import { useDateFormat } from '#hooks/useDateFormat';
+import { useFormat } from '#hooks/useFormat';
+import { usePayees } from '#hooks/usePayees';
 
 import { StatusBadge } from './StatusBadge';
-
 type SchedulesTableProps = {
   isLoading?: boolean;
   schedules: readonly ScheduleEntity[];
@@ -37,75 +34,34 @@ type SchedulesTableProps = {
   filter: string;
   allowCompleted: boolean;
   onSelect: (id: ScheduleEntity['id']) => void;
-  onAction: (actionName: ScheduleItemAction, id: ScheduleEntity['id']) => void;
   style: CSSProperties;
-  minimal?: boolean;
   tableStyle?: CSSProperties;
-};
+} & (
+  | {
+      minimal: true;
+      onAction?: never;
+    }
+  | {
+      minimal?: false;
+      onAction: (
+        actionName: ScheduleItemAction,
+        id: ScheduleEntity['id'],
+      ) => void;
+    }
+);
 
 type CompletedScheduleItem = { id: 'show-completed' };
 type SchedulesTableItem = ScheduleEntity | CompletedScheduleItem;
 
 export type ScheduleItemAction =
   | 'post-transaction'
+  | 'post-transaction-today'
   | 'skip'
   | 'complete'
   | 'restart'
   | 'delete';
 
 export const ROW_HEIGHT = 43;
-
-function OverflowMenu({
-  schedule,
-  status,
-  onAction,
-}: {
-  schedule: ScheduleEntity;
-  status: ScheduleStatusType;
-  onAction: SchedulesTableProps['onAction'];
-}) {
-  const { t } = useTranslation();
-
-  const getMenuItems = () => {
-    const menuItems: { name: ScheduleItemAction; text: string }[] = [];
-
-    menuItems.push({
-      name: 'post-transaction',
-      text: t('Post transaction today'),
-    });
-
-    if (status === 'completed') {
-      menuItems.push({
-        name: 'restart',
-        text: t('Restart'),
-      });
-    } else {
-      menuItems.push(
-        {
-          name: 'skip',
-          text: t('Skip next scheduled date'),
-        },
-        {
-          name: 'complete',
-          text: t('Complete'),
-        },
-      );
-    }
-
-    menuItems.push({ name: 'delete', text: t('Delete') });
-
-    return menuItems;
-  };
-
-  return (
-    <Menu
-      onMenuSelect={name => {
-        onAction(name, schedule.id);
-      }}
-      items={getMenuItems()}
-    />
-  );
-}
 
 export function ScheduleAmountCell({
   amount,
@@ -115,11 +71,25 @@ export function ScheduleAmountCell({
   op: ScheduleEntity['_amountOp'];
 }) {
   const { t } = useTranslation();
+  const format = useFormat();
 
   const num = getScheduledAmount(amount);
-  const currencyAmount = integerToCurrency(Math.abs(num || 0));
-  const isApprox = op === 'isapprox' || op === 'isbetween';
-
+  const currencyAmount = format(Math.abs(num || 0), 'financial');
+  const isApprox = op === 'isapprox';
+  const isBetween = op === 'isbetween';
+  let cellText = '';
+  if (isApprox) {
+    cellText = t('Approximately {{currencyAmount}}', {
+      currencyAmount,
+    });
+  } else if (isBetween && typeof amount != 'number') {
+    cellText = t('{{currency1}} to {{currency2}}', {
+      currency1: format(Math.abs(amount.num1 || 0), 'financial'),
+      currency2: format(Math.abs(amount.num2 || 0), 'financial'),
+    });
+  } else {
+    cellText = currencyAmount;
+  }
   return (
     <Cell
       width={100}
@@ -140,16 +110,25 @@ export function ScheduleAmountCell({
             lineHeight: '1em',
             marginRight: 10,
           }}
-          title={
-            isApprox
-              ? t('Approximately {{currencyAmount}}', { currencyAmount })
-              : currencyAmount
-          }
+          title={cellText}
         >
           ~
         </View>
       )}
-      <Text
+      {isBetween && (
+        <View
+          style={{
+            textAlign: 'left',
+            color: theme.pageTextSubdued,
+            lineHeight: '1em',
+            marginRight: 10,
+          }}
+          title={cellText}
+        >
+          ±
+        </View>
+      )}
+      <FinancialText
         style={{
           flex: 1,
           color: num > 0 ? theme.noticeTextLight : theme.tableText,
@@ -157,16 +136,12 @@ export function ScheduleAmountCell({
           overflow: 'hidden',
           textOverflow: 'ellipsis',
         }}
-        title={
-          isApprox
-            ? t('Approximately {{currencyAmount}}', { currencyAmount })
-            : currencyAmount
-        }
+        title={cellText}
       >
         <PrivacyFilter>
           {num > 0 ? `+${currencyAmount}` : `${currencyAmount}`}
         </PrivacyFilter>
-      </Text>
+      </FinancialText>
     </Cell>
   );
 }
@@ -178,7 +153,10 @@ function ScheduleRow({
   minimal,
   statuses,
   dateFormat,
-}: { schedule: ScheduleEntity; dateFormat: string } & Pick<
+}: {
+  schedule: ScheduleEntity;
+  dateFormat: string;
+} & Pick<
   SchedulesTableProps,
   'onSelect' | 'onAction' | 'minimal' | 'statuses'
 >) {
@@ -186,14 +164,48 @@ function ScheduleRow({
 
   const rowRef = useRef(null);
   const buttonRef = useRef(null);
-  const {
-    setMenuOpen,
-    menuOpen,
-    handleContextMenu,
-    resetPosition,
-    position,
-    asContextMenu,
-  } = useContextMenu();
+
+  const status = statuses.get(schedule.id);
+  useContextMenu({
+    triggerRef: rowRef,
+    items: !minimal
+      ? [
+          {
+            name: 'post-transaction',
+            text: t('Post transaction'),
+            onClick: () => onAction('post-transaction', schedule.id),
+          },
+          {
+            name: 'post-transaction-today',
+            text: t('Post transaction today'),
+            onClick: () => onAction('post-transaction-today', schedule.id),
+          },
+          {
+            name: 'restart',
+            text: t('Restart'),
+            onClick: () => onAction('restart', schedule.id),
+            hidden: status !== 'completed',
+          },
+          {
+            name: 'skip',
+            text: t('Skip next scheduled date'),
+            onClick: () => onAction('skip', schedule.id),
+            hidden: status === 'completed',
+          },
+          {
+            name: 'complete',
+            text: t('Complete'),
+            onClick: () => onAction('complete', schedule.id),
+            hidden: status === 'completed',
+          },
+          {
+            name: 'delete',
+            text: t('Delete'),
+            onClick: () => onAction('delete', schedule.id),
+          },
+        ]
+      : [],
+  });
 
   return (
     <Row
@@ -207,29 +219,7 @@ function ScheduleRow({
         color: theme.tableText,
         ':hover': { backgroundColor: theme.tableRowBackgroundHover },
       }}
-      onContextMenu={handleContextMenu}
     >
-      {!minimal && (
-        <Popover
-          triggerRef={asContextMenu ? rowRef : buttonRef}
-          isOpen={menuOpen}
-          onOpenChange={() => setMenuOpen(false)}
-          isNonModal
-          placement="bottom start"
-          {...position}
-          style={{ margin: 1 }}
-        >
-          <OverflowMenu
-            schedule={schedule}
-            status={statuses.get(schedule.id)}
-            onAction={(action, id) => {
-              onAction(action, id);
-              resetPosition();
-              setMenuOpen(false);
-            }}
-          />
-        </Popover>
-      )}
       <Field width="flex" name="name">
         <Text
           style={
@@ -259,9 +249,11 @@ function ScheduleRow({
       <ScheduleAmountCell amount={schedule._amount} op={schedule._amountOp} />
       {!minimal && (
         <Field width={80} style={{ textAlign: 'center' }}>
-          {schedule._date && schedule._date.frequency && (
-            <SvgCheck style={{ width: 13, height: 13 }} />
-          )}
+          {schedule._date &&
+            typeof schedule._date === 'object' &&
+            schedule._date.frequency && (
+              <SvgCheck style={{ width: 13, height: 13 }} />
+            )}
         </Field>
       )}
       {!minimal && (
@@ -272,8 +264,18 @@ function ScheduleRow({
               variant="bare"
               aria-label={t('Menu')}
               onPress={() => {
-                resetPosition();
-                setMenuOpen(true);
+                if (rowRef.current) {
+                  const rect = buttonRef.current?.getBoundingClientRect();
+                  const clientX = rect ? rect.left : 0;
+                  const clientY = rect ? rect.bottom : 0;
+                  (rowRef.current as HTMLElement).dispatchEvent(
+                    new MouseEvent('contextmenu', {
+                      bubbles: true,
+                      clientX,
+                      clientY,
+                    }),
+                  );
+                }
               }}
             >
               <SvgDotsHorizontalTriple
@@ -302,12 +304,13 @@ export function SchedulesTable({
   tableStyle,
 }: SchedulesTableProps) {
   const { t } = useTranslation();
+  const format = useFormat();
 
   const dateFormat = useDateFormat() || 'MM/dd/yyyy';
   const [showCompleted, setShowCompleted] = useState(false);
 
-  const payees = usePayees();
-  const accounts = useAccounts();
+  const { data: payees } = usePayees();
+  const { data: accounts = [] } = useAccounts();
 
   const filteredSchedules = useMemo(() => {
     if (!filter) {
@@ -323,12 +326,14 @@ export function SchedulesTable({
       const payee = payees.find(p => schedule._payee === p.id);
       const account = accounts.find(a => schedule._account === a.id);
       const amount = getScheduledAmount(schedule._amount);
-      const amountStr =
-        (schedule._amountOp === 'isapprox' || schedule._amountOp === 'isbetween'
-          ? '~'
-          : '') +
-        (amount > 0 ? '+' : '') +
-        integerToCurrency(Math.abs(amount || 0));
+      let amountStr = '';
+      if (schedule._amountOp === 'isbetween') {
+        amountStr = '±';
+      } else if (schedule._amountOp === 'isapprox') {
+        amountStr = '~';
+      }
+      amountStr +=
+        (amount > 0 ? '+' : '') + format(Math.abs(amount || 0), 'financial');
       const dateStr = schedule.next_date
         ? monthUtilFormat(schedule.next_date, dateFormat)
         : null;
@@ -342,7 +347,7 @@ export function SchedulesTable({
         filterIncludes(dateStr)
       );
     });
-  }, [payees, accounts, schedules, filter, statuses]);
+  }, [payees, accounts, schedules, filter, statuses, format, dateFormat]);
 
   const items: readonly SchedulesTableItem[] = useMemo(() => {
     const unCompletedSchedules = filteredSchedules.filter(s => !s.completed);
@@ -396,7 +401,7 @@ export function SchedulesTable({
   }
 
   return (
-    <View style={{ flex: 1, ...tableStyle }}>
+    <View style={{ ...styles.tableContainer, ...tableStyle }}>
       <TableHeader height={ROW_HEIGHT} inset={15}>
         <Field width="flex">
           <Trans>Name</Trans>

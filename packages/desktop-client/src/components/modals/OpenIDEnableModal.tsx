@@ -1,25 +1,29 @@
 import { useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { closeBudget, popModal } from 'loot-core/client/actions';
-import { send } from 'loot-core/platform/client/fetch';
-import * as asyncStorage from 'loot-core/platform/server/asyncStorage';
-import { getOpenIdErrors } from 'loot-core/shared/errors';
-import { type OpenIdConfig } from 'loot-core/types/models/openid';
+import { Button } from '@actual-app/components/button';
+import { Label } from '@actual-app/components/label';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
+import * as asyncStorage from '@actual-app/core/platform/server/asyncStorage';
+import type { OpenIdConfig } from '@actual-app/core/types/models';
 
-import { useDispatch } from '../../redux';
-import { theme, styles } from '../../style';
-import { Error } from '../alerts';
-import { Button } from '../common/Button2';
-import { Label } from '../common/Label';
-import { Modal, ModalCloseButton, ModalHeader } from '../common/Modal';
-import { View } from '../common/View';
-import { OpenIdForm } from '../manager/subscribe/OpenIdForm';
-import { useRefreshLoginMethods } from '../ServerContext';
+import { closeBudget } from '#budgetfiles/budgetfilesSlice';
+import { Error } from '#components/alerts';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { OpenIdForm } from '#components/manager/subscribe/OpenIdForm';
+import { useRefreshLoginMethods } from '#components/ServerContext';
+import { popModal } from '#modals/modalsSlice';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
+import { getOpenIdErrors } from '#util/error';
 
-type OpenIDEnableModalProps = {
-  onSave?: () => void;
-};
+type OpenIDEnableModalProps = Extract<
+  ModalType,
+  { name: 'enable-openid' }
+>['options'];
 
 export function OpenIDEnableModal({
   onSave: originalOnSave,
@@ -58,11 +62,11 @@ export function OpenIDEnableModal({
 
   return (
     <Modal name="enable-openid">
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={t('Enable OpenID')}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
 
           <View style={{ flexDirection: 'column' }}>

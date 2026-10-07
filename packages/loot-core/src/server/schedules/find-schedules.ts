@@ -2,18 +2,16 @@
 import * as d from 'date-fns';
 import { v4 as uuidv4 } from 'uuid';
 
-import { dayFromDate, parseDate } from '../../shared/months';
-import { q } from '../../shared/query';
-import { getApproxNumberThreshold } from '../../shared/rules';
-import { recurConfigToRSchedule } from '../../shared/schedules';
-import { groupBy } from '../../shared/util';
-import { conditionsToAQL } from '../accounts/transaction-rules';
-import { runQuery as aqlQuery } from '../aql';
-import * as db from '../db';
-import { fromDateRepr } from '../models';
-import { Schedule as RSchedule } from '../util/rschedule';
-
-import { SchedulesHandlers } from './types/handlers';
+import { aqlQuery } from '#server/aql';
+import * as db from '#server/db';
+import { fromDateRepr } from '#server/models';
+import { conditionsToAQL } from '#server/transactions/transaction-rules';
+import { RSchedule } from '#server/util/rschedule';
+import { dayFromDate, parseDate } from '#shared/months';
+import { q } from '#shared/query';
+import { getApproxNumberThreshold } from '#shared/rules';
+import { recurConfigToRSchedule } from '#shared/schedules';
+import { groupBy } from '#shared/util';
 
 function takeDates(config) {
   const schedule = new RSchedule({ rrules: recurConfigToRSchedule(config) });
@@ -247,7 +245,7 @@ async function findStartDate(schedule) {
   const dateCond = conditions.find(c => c.field === 'date');
   let currentConfig = dateCond.value;
 
-  while (1) {
+  while (true) {
     const prevConfig = currentConfig;
     currentConfig = { ...prevConfig };
 
@@ -337,8 +335,8 @@ export async function findSchedules() {
 
   for (const account of accounts) {
     // Find latest transaction-ish to start with
-    const latestTrans = await db.first(
-      'SELECT * FROM v_transactions WHERE account = ? AND parent_id IS NULL ORDER BY date DESC LIMIT 1',
+    const latestTrans = await db.first<Pick<db.DbViewTransaction, 'date'>>(
+      'SELECT date FROM v_transactions WHERE account = ? AND parent_id IS NULL ORDER BY date DESC LIMIT 1',
       [account.id],
     );
 
@@ -385,8 +383,7 @@ export async function findSchedules() {
     },
   );
 
-  const finalized: Awaited<ReturnType<SchedulesHandlers['schedule/discover']>> =
-    [];
+  const finalized: Awaited<ReturnType<typeof findStartDate>> = [];
   for (const schedule of schedules) {
     finalized.push(await findStartDate(schedule));
   }

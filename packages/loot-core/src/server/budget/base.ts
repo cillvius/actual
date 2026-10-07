@@ -1,18 +1,20 @@
+import { aqlQuery } from '#server/aql';
+import * as db from '#server/db';
+import * as sheet from '#server/sheet';
+import { resolveName } from '#server/spreadsheet/util';
 // @ts-strict-ignore
-import * as monthUtils from '../../shared/months';
-import { getChangedValues } from '../../shared/util';
-import * as db from '../db';
-import * as sheet from '../sheet';
-import { resolveName } from '../spreadsheet/util';
+import * as monthUtils from '#shared/months';
+import { q } from '#shared/query';
+import { getChangedValues } from '#shared/util';
+import type { CategoryGroupEntity } from '#types/models';
 
 import * as budgetActions from './actions';
 import * as envelopeBudget from './envelope';
-import * as report from './report';
-import { sumAmounts } from './util';
+import * as trackingBudget from './tracking';
 
 export function getBudgetType() {
   const meta = sheet.get().meta();
-  return meta.budgetType || 'rollover';
+  return meta.budgetType || 'envelope';
 }
 
 export function getBudgetRange(start: string, end: string) {
@@ -36,12 +38,44 @@ export function getBudgetRange(start: string, end: string) {
   return { start, end, range: monthUtils.rangeInclusive(start, end) };
 }
 
-function createCategory(cat, sheetName, prevSheetName, start, end) {
+// Computes the spend total for every category in every month within the
+// given day range using a single grouped query. This is used to seed the
+// `sum-amount` cells on a cold build so we avoid running one
+// `SELECT SUM(amount)` query per category per month (which scales as
+// categories × months and dominates load time for budgets with many years
+// of data). The filters must match the per-cell query in `createCategory`
+// exactly so balances stay identical.
+function getSumAmountsByMonth(
+  rangeStart: number,
+  rangeEnd: number,
+): Map<string, number> {
+  const rows = db.runQuery<{ month: number; category: string; amount: number }>(
+    `SELECT t.category AS category,
+            t.date / 100 AS month,
+            SUM(t.amount) AS amount
+       FROM v_transactions_internal_alive t
+       LEFT JOIN accounts a ON a.id = t.account
+      WHERE t.date >= ${rangeStart} AND t.date <= ${rangeEnd}
+        AND t.category IS NOT NULL
+        AND a.offbudget = 0
+      GROUP BY t.category, t.date / 100`,
+    [],
+    true,
+  );
+
+  const sums = new Map<string, number>();
+  for (const row of rows) {
+    sums.set(`${row.month}-${row.category}`, row.amount || 0);
+  }
+  return sums;
+}
+
+export function createCategory(cat, sheetName, prevSheetName, start, end) {
   sheet.get().createDynamic(sheetName, 'sum-amount-' + cat.id, {
     initialValue: 0,
     run: () => {
       // Making this sync is faster!
-      const rows = db.runQuery(
+      const rows = db.runQuery<{ amount: number }>(
         `SELECT SUM(amount) as amount FROM v_transactions_internal_alive t
            LEFT JOIN accounts a ON a.id = t.account
          WHERE t.date >= ${start} AND t.date <= ${end}
@@ -55,38 +89,16 @@ function createCategory(cat, sheetName, prevSheetName, start, end) {
     },
   });
 
-  if (getBudgetType() === 'rollover') {
+  if (getBudgetType() === 'envelope') {
     envelopeBudget.createCategory(cat, sheetName, prevSheetName);
   } else {
-    report.createCategory(cat, sheetName, prevSheetName);
-  }
-}
-
-function createCategoryGroup(group, sheetName) {
-  sheet.get().createDynamic(sheetName, 'group-sum-amount-' + group.id, {
-    initialValue: 0,
-    dependencies: group.categories.map(cat => `sum-amount-${cat.id}`),
-    run: sumAmounts,
-  });
-
-  if (!group.is_income || getBudgetType() !== 'rollover') {
-    sheet.get().createDynamic(sheetName, 'group-budget-' + group.id, {
-      initialValue: 0,
-      dependencies: group.categories.map(cat => `budget-${cat.id}`),
-      run: sumAmounts,
-    });
-
-    sheet.get().createDynamic(sheetName, 'group-leftover-' + group.id, {
-      initialValue: 0,
-      dependencies: group.categories.map(cat => `leftover-${cat.id}`),
-      run: sumAmounts,
-    });
+    void trackingBudget.createCategory(cat, sheetName, prevSheetName);
   }
 }
 
 function handleAccountChange(months, oldValue, newValue) {
   if (!oldValue || oldValue.offbudget !== newValue.offbudget) {
-    const rows = db.runQuery(
+    const rows = db.runQuery<Pick<db.DbTransaction, 'category'>>(
       `
         SELECT DISTINCT(category) as category FROM transactions
         WHERE acct = ?
@@ -141,167 +153,6 @@ function handleCategoryMappingChange(months, oldValue, newValue) {
   });
 }
 
-function handleCategoryChange(months, oldValue, newValue) {
-  function addDeps(sheetName, groupId, catId) {
-    sheet
-      .get()
-      .addDependencies(sheetName, `group-sum-amount-${groupId}`, [
-        `sum-amount-${catId}`,
-      ]);
-    sheet
-      .get()
-      .addDependencies(sheetName, `group-budget-${groupId}`, [
-        `budget-${catId}`,
-      ]);
-    sheet
-      .get()
-      .addDependencies(sheetName, `group-leftover-${groupId}`, [
-        `leftover-${catId}`,
-      ]);
-  }
-
-  function removeDeps(sheetName, groupId, catId) {
-    sheet
-      .get()
-      .removeDependencies(sheetName, `group-sum-amount-${groupId}`, [
-        `sum-amount-${catId}`,
-      ]);
-    sheet
-      .get()
-      .removeDependencies(sheetName, `group-budget-${groupId}`, [
-        `budget-${catId}`,
-      ]);
-    sheet
-      .get()
-      .removeDependencies(sheetName, `group-leftover-${groupId}`, [
-        `leftover-${catId}`,
-      ]);
-  }
-
-  const budgetType = getBudgetType();
-
-  if (oldValue && oldValue.tombstone === 0 && newValue.tombstone === 1) {
-    const id = newValue.id;
-    const groupId = newValue.cat_group;
-
-    months.forEach(month => {
-      const sheetName = monthUtils.sheetForMonth(month);
-      removeDeps(sheetName, groupId, id);
-    });
-  } else if (
-    newValue.tombstone === 0 &&
-    (!oldValue || oldValue.tombstone === 1)
-  ) {
-    if (budgetType === 'rollover') {
-      envelopeBudget.createBlankCategory(newValue, months);
-    }
-
-    months.forEach(month => {
-      const prevMonth = monthUtils.prevMonth(month);
-      const prevSheetName = monthUtils.sheetForMonth(prevMonth);
-      const sheetName = monthUtils.sheetForMonth(month);
-      const { start, end } = monthUtils.bounds(month);
-
-      createCategory(newValue, sheetName, prevSheetName, start, end);
-
-      const id = newValue.id;
-      const groupId = newValue.cat_group;
-
-      if (getBudgetType() === 'rollover') {
-        sheet
-          .get()
-          .addDependencies(sheetName, 'last-month-overspent', [
-            `${prevSheetName}!leftover-${id}`,
-            `${prevSheetName}!carryover-${id}`,
-          ]);
-      }
-
-      addDeps(sheetName, groupId, id);
-    });
-  } else if (oldValue && oldValue.cat_group !== newValue.cat_group) {
-    // The category moved so we need to update the dependencies
-    const id = newValue.id;
-
-    months.forEach(month => {
-      const sheetName = monthUtils.sheetForMonth(month);
-      removeDeps(sheetName, oldValue.cat_group, id);
-      addDeps(sheetName, newValue.cat_group, id);
-    });
-  }
-}
-
-function handleCategoryGroupChange(months, oldValue, newValue) {
-  const budgetType = getBudgetType();
-
-  function addDeps(sheetName, groupId) {
-    sheet
-      .get()
-      .addDependencies(sheetName, 'total-budgeted', [
-        `group-budget-${groupId}`,
-      ]);
-    sheet
-      .get()
-      .addDependencies(sheetName, 'total-spent', [
-        `group-sum-amount-${groupId}`,
-      ]);
-    sheet
-      .get()
-      .addDependencies(sheetName, 'total-leftover', [
-        `group-leftover-${groupId}`,
-      ]);
-  }
-
-  function removeDeps(sheetName, groupId) {
-    sheet
-      .get()
-      .removeDependencies(sheetName, 'total-budgeted', [
-        `group-budget-${groupId}`,
-      ]);
-    sheet
-      .get()
-      .removeDependencies(sheetName, 'total-spent', [
-        `group-sum-amount-${groupId}`,
-      ]);
-    sheet
-      .get()
-      .removeDependencies(sheetName, 'total-leftover', [
-        `group-leftover-${groupId}`,
-      ]);
-  }
-
-  if (newValue.tombstone === 1 && oldValue && oldValue.tombstone === 0) {
-    const id = newValue.id;
-    months.forEach(month => {
-      const sheetName = monthUtils.sheetForMonth(month);
-      removeDeps(sheetName, id);
-    });
-  } else if (
-    newValue.tombstone === 0 &&
-    (!oldValue || oldValue.tombstone === 1)
-  ) {
-    const group = newValue;
-
-    if (!group.is_income || budgetType !== 'rollover') {
-      months.forEach(month => {
-        const sheetName = monthUtils.sheetForMonth(month);
-
-        // Dirty, dirty hack. These functions should not be async, but this is
-        // OK because we're leveraging the sync nature of queries. Ideally we
-        // wouldn't be querying here. But I think we have to. At least for now
-        // we do
-        const categories = db.runQuery(
-          'SELECT * FROM categories WHERE tombstone = 0 AND cat_group = ?',
-          [group.id],
-          true,
-        );
-        createCategoryGroup({ ...group, categories }, sheetName);
-
-        addDeps(sheetName, group.id);
-      });
-    }
-  }
-}
-
 function handleBudgetMonthChange(budget) {
   const sheetName = monthUtils.sheetForMonth(budget.id);
   sheet.get().set(`${sheetName}!buffered`, budget.buffered);
@@ -328,6 +179,7 @@ function handleBudgetChange(budget) {
 
 export function triggerBudgetChanges(oldValues, newValues) {
   const { createdMonths = new Set() } = sheet.get().meta();
+  const budgetType = getBudgetType();
   sheet.startTransaction();
 
   try {
@@ -353,9 +205,33 @@ export function triggerBudgetChanges(oldValues, newValues) {
         } else if (table === 'category_mapping') {
           handleCategoryMappingChange(createdMonths, oldValue, newValue);
         } else if (table === 'categories') {
-          handleCategoryChange(createdMonths, oldValue, newValue);
+          if (budgetType === 'envelope') {
+            envelopeBudget.handleCategoryChange(
+              createdMonths,
+              oldValue,
+              newValue,
+            );
+          } else {
+            trackingBudget.handleCategoryChange(
+              createdMonths,
+              oldValue,
+              newValue,
+            );
+          }
         } else if (table === 'category_groups') {
-          handleCategoryGroupChange(createdMonths, oldValue, newValue);
+          if (budgetType === 'envelope') {
+            envelopeBudget.handleCategoryGroupChange(
+              createdMonths,
+              oldValue,
+              newValue,
+            );
+          } else {
+            trackingBudget.handleCategoryGroupChange(
+              createdMonths,
+              oldValue,
+              newValue,
+            );
+          }
         } else if (table === 'accounts') {
           handleAccountChange(createdMonths, oldValue, newValue);
         }
@@ -381,7 +257,7 @@ export async function doTransfer(categoryIds, transferId) {
       category: transferId,
     });
 
-    budgetActions.setBudget({
+    void budgetActions.setBudget({
       month,
       category: transferId,
       amount: totalValue + transferValue,
@@ -390,8 +266,10 @@ export async function doTransfer(categoryIds, transferId) {
 }
 
 export async function createBudget(months) {
-  const categories = await db.getCategories();
-  const groups = await db.getCategoriesGrouped();
+  const { data: groups }: { data: CategoryGroupEntity[] } = await aqlQuery(
+    q('category_groups').select('*'),
+  );
+  const categories = groups.flatMap(group => group.categories);
 
   sheet.startTransaction();
   const meta = sheet.get().meta();
@@ -399,41 +277,95 @@ export async function createBudget(months) {
 
   const budgetType = getBudgetType();
 
-  if (budgetType === 'rollover') {
+  if (budgetType === 'envelope') {
     envelopeBudget.createBudget(meta, categories, months);
   }
 
-  months.forEach(month => {
-    if (!meta.createdMonths.has(month)) {
-      const prevMonth = monthUtils.prevMonth(month);
-      const { start, end } = monthUtils.bounds(month);
-      const sheetName = monthUtils.sheetForMonth(month);
-      const prevSheetName = monthUtils.sheetForMonth(prevMonth);
+  // Only months that don't already exist need to be created and seeded.
+  const monthsToCreate = months.filter(month => !meta.createdMonths.has(month));
 
-      categories.forEach(cat => {
-        createCategory(cat, sheetName, prevSheetName, start, end);
-      });
-      groups.forEach(group => {
-        createCategoryGroup(group, sheetName);
-      });
-
-      if (budgetType === 'rollover') {
-        envelopeBudget.createSummary(
-          groups,
-          categories,
-          prevSheetName,
-          sheetName,
-        );
-      } else {
-        report.createSummary(groups, categories, sheetName);
+  // Spend totals for every category in the months being created, computed
+  // once via a single grouped query and used to seed the `sum-amount` cells so
+  // they don't each run their own query. Scoped to the uncached month span so
+  // extending the budget horizon doesn't rescan the entire transaction
+  // history, and loaded lazily so warm loads never touch the database here.
+  let sumAmounts: Map<string, number> | null = null;
+  const getSumAmounts = () => {
+    if (!sumAmounts) {
+      // `monthsToCreate` isn't guaranteed to be sorted, so find the span
+      // explicitly ('YYYY-MM' strings compare chronologically).
+      let firstMonth = monthsToCreate[0];
+      let lastMonth = monthsToCreate[0];
+      for (const month of monthsToCreate) {
+        if (month < firstMonth) {
+          firstMonth = month;
+        }
+        if (month > lastMonth) {
+          lastMonth = month;
+        }
       }
-
-      meta.createdMonths.add(month);
+      sumAmounts = getSumAmountsByMonth(
+        monthUtils.bounds(firstMonth).start,
+        monthUtils.bounds(lastMonth).end,
+      );
     }
+    return sumAmounts;
+  };
+  const seededCells: string[] = [];
+
+  monthsToCreate.forEach(month => {
+    const prevMonth = monthUtils.prevMonth(month);
+    const { start, end } = monthUtils.bounds(month);
+    const sheetName = monthUtils.sheetForMonth(month);
+    const prevSheetName = monthUtils.sheetForMonth(prevMonth);
+    const dbMonth = parseInt(month.replace('-', ''));
+
+    categories.forEach(cat => {
+      // Seed the spend total before creating the dynamic cell so the cell
+      // skips its per-category query. Only happens on a cold build, when
+      // the value hasn't been restored from cache.
+      const sumCell = `sum-amount-${cat.id}`;
+      if (sheet.get().getCellValueLoose(sheetName, sumCell) == null) {
+        const name = resolveName(sheetName, sumCell);
+        sheet
+          .get()
+          .load(name, getSumAmounts().get(`${dbMonth}-${cat.id}`) || 0);
+        seededCells.push(name);
+      }
+      createCategory(cat, sheetName, prevSheetName, start, end);
+    });
+    groups.forEach(group => {
+      if (budgetType === 'envelope') {
+        envelopeBudget.createCategoryGroup(group, sheetName);
+      } else {
+        trackingBudget.createCategoryGroup(group, sheetName);
+      }
+    });
+
+    if (budgetType === 'envelope') {
+      envelopeBudget.createSummary(
+        groups,
+        categories,
+        prevSheetName,
+        sheetName,
+      );
+    } else {
+      trackingBudget.createSummary(groups, sheetName);
+    }
+
+    meta.createdMonths.add(month);
   });
 
   sheet.get().setMeta(meta);
   sheet.endTransaction();
+
+  // Persist the seeded spend totals to the cache. Because they were loaded
+  // directly (rather than recomputed) they aren't part of the computation
+  // queue that normally gets cached, so without this a warm load would have
+  // to recompute them. The cells already hold their final values here.
+  if (seededCells.length > 0) {
+    sheet.get().saveCachedCells(seededCells);
+  }
 
   // Wait for the spreadsheet to finish computing. Normally this won't
   // do anything (as values are cached) but on first run this need to
@@ -442,7 +374,7 @@ export async function createBudget(months) {
 }
 
 export async function createAllBudgets() {
-  const earliestTransaction = await db.first(
+  const earliestTransaction = await db.first<db.DbTransaction>(
     'SELECT * FROM transactions WHERE isChild=0 AND date IS NOT NULL ORDER BY date ASC LIMIT 1',
   );
   const earliestDate =
@@ -489,7 +421,7 @@ export async function setType(type) {
   });
 
   sheet.get().startCacheBarrier();
-  sheet.loadUserBudgets(db);
+  void sheet.loadUserBudgets(db);
   const bounds = await createAllBudgets();
   sheet.get().endCacheBarrier();
 

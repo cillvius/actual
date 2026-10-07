@@ -1,12 +1,12 @@
-import {
-  type LegendEntity,
-  type IntervalEntity,
-  type GroupedEntity,
-  type balanceTypeOpType,
-} from 'loot-core/src/types/models/reports';
+import { theme } from '@actual-app/components/theme';
+import type {
+  balanceTypeOpType,
+  GroupedEntity,
+  IntervalEntity,
+  LegendEntity,
+} from '@actual-app/core/types/models';
 
-import { theme } from '../../../style';
-import { getColorScale } from '../chart-theme';
+import { getColorScale } from '#components/reports/chart-theme';
 
 export function calculateLegend(
   intervalData: IntervalEntity[],
@@ -25,25 +25,41 @@ export function calculateLegend(
           return { name: c.name, id: c.id, data: c };
         });
 
-  function getColor(data: IntervalEntity, index: number) {
+  function getColor(data: IntervalEntity | GroupedEntity, index: number) {
     if (graphType === 'DonutGraph') {
       return colorScale[index % colorScale.length];
     }
 
     if (groupBy === 'Interval') {
       if (balanceTypeOp === 'totalDebts') {
-        return theme.reportsRed;
+        return theme.reportsNumberNegative;
       }
 
-      if (balanceTypeOp === 'totalTotals') {
-        if (data.totalTotals < 0) {
-          return theme.reportsRed;
+      if (balanceTypeOp === 'netDebts') {
+        return theme.reportsNumberNegative;
+      }
+
+      if (
+        balanceTypeOp === 'totalTotals' ||
+        balanceTypeOp === 'totalBudgeted'
+      ) {
+        const total =
+          balanceTypeOp === 'totalBudgeted'
+            ? data.totalBudgeted
+            : data.totalTotals;
+
+        if (total < 0) {
+          return theme.reportsNumberNegative;
         }
 
-        return theme.reportsBlue;
+        return theme.reportsNumberPositive;
       }
 
-      return theme.reportsBlue;
+      if (balanceTypeOp === 'totalAssets' || balanceTypeOp === 'netAssets') {
+        return theme.reportsNumberPositive;
+      }
+
+      return theme.reportsChartFill;
     }
 
     return colorScale[index % colorScale.length];
@@ -54,6 +70,11 @@ export function calculateLegend(
       id: item.id || '',
       name: item.name || '',
       color: getColor(item.data, index),
+      dataKey: item.id || item.name || '', // Use id for unique data lookup
+      uncategorizedId:
+        'uncategorizedId' in item.data ? item.data.uncategorizedId : undefined,
+      bucketTagNames:
+        'bucketTagNames' in item.data ? item.data.bucketTagNames : undefined,
     };
   });
   return legend;

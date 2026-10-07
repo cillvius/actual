@@ -1,19 +1,15 @@
-import React, {
-  type CSSProperties,
-  useCallback,
-  useRef,
-  useState,
-} from 'react';
+import React, { useCallback, useRef, useState } from 'react';
+import type { CSSProperties, MouseEvent } from 'react';
 
-import { envelopeBudget } from 'loot-core/src/client/queries';
+import { Popover } from '@actual-app/components/popover';
+import { View } from '@actual-app/components/view';
 
-import { useContextMenu } from '../../../../hooks/useContextMenu';
-import { Popover } from '../../../common/Popover';
-import { View } from '../../../common/View';
-import { CoverMenu } from '../CoverMenu';
-import { useEnvelopeSheetValue } from '../EnvelopeBudgetComponents';
-import { HoldMenu } from '../HoldMenu';
-import { TransferMenu } from '../TransferMenu';
+import { CoverMenu } from '#components/budget/envelope/CoverMenu';
+import { useEnvelopeSheetValue } from '#components/budget/envelope/EnvelopeBudgetComponents';
+import { HoldMenu } from '#components/budget/envelope/HoldMenu';
+import { TransferMenu } from '#components/budget/envelope/TransferMenu';
+import { useFormat } from '#hooks/useFormat';
+import { envelopeBudget } from '#spreadsheet/bindings';
 
 import { ToBudgetAmount } from './ToBudgetAmount';
 import { ToBudgetMenu } from './ToBudgetMenu';
@@ -36,6 +32,7 @@ export function ToBudget({
 }: ToBudgetProps) {
   const [menuStep, _setMenuStep] = useState<string>('actions');
   const triggerRef = useRef(null);
+  const format = useFormat();
 
   const ref = useRef<HTMLSpanElement>(null);
   const setMenuStep = useCallback(
@@ -55,14 +52,25 @@ export function ToBudget({
     );
   }
 
-  const {
-    setMenuOpen,
-    menuOpen,
-    handleContextMenu,
-    resetPosition,
-    position,
-    asContextMenu,
-  } = useContextMenu();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [position, setPosition] = useState({ crossOffset: 0, offset: 0 });
+  const resetPosition = (crossOffset = 0, offset = 0) =>
+    setPosition({ crossOffset, offset });
+
+  const handleContextMenu = (e: MouseEvent) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setPosition({
+      crossOffset: e.clientX - rect.left,
+      offset: e.clientY - rect.bottom,
+    });
+    setMenuOpen(true);
+  };
+
+  const closeMenu = () => {
+    setMenuStep('actions');
+    setMenuOpen(false);
+  };
 
   return (
     <>
@@ -82,12 +90,9 @@ export function ToBudget({
 
       <Popover
         triggerRef={triggerRef}
-        placement={asContextMenu ? 'bottom start' : 'bottom'}
+        placement="bottom"
         isOpen={menuOpen}
-        onOpenChange={() => {
-          setMenuStep('actions');
-          setMenuOpen(false);
-        }}
+        onOpenChange={closeMenu}
         style={{ width: 200, margin: 1 }}
         isNonModal
         {...position}
@@ -102,11 +107,13 @@ export function ToBudget({
                 onBudgetAction(month, 'reset-hold');
                 setMenuOpen(false);
               }}
+              month={month}
+              onBudgetAction={onBudgetAction}
             />
           )}
           {menuStep === 'buffer' && (
             <HoldMenu
-              onClose={() => setMenuOpen(false)}
+              onClose={closeMenu}
               onSubmit={amount => {
                 onBudgetAction(month, 'hold', { amount });
               }}
@@ -114,8 +121,8 @@ export function ToBudget({
           )}
           {menuStep === 'transfer' && (
             <TransferMenu
-              initialAmount={availableValue ?? undefined}
-              onClose={() => setMenuOpen(false)}
+              initialAmount={availableValue}
+              onClose={closeMenu}
               onSubmit={(amount, categoryId) => {
                 onBudgetAction(month, 'transfer-available', {
                   amount,
@@ -127,10 +134,13 @@ export function ToBudget({
           {menuStep === 'cover' && (
             <CoverMenu
               showToBeBudgeted={false}
-              onClose={() => setMenuOpen(false)}
-              onSubmit={categoryId => {
+              initialAmount={availableValue}
+              onClose={closeMenu}
+              onSubmit={(amount, categoryId) => {
                 onBudgetAction(month, 'cover-overbudgeted', {
                   category: categoryId,
+                  amount,
+                  currencyCode: format.currency.code,
                 });
               }}
             />

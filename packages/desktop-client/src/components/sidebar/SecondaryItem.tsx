@@ -1,14 +1,15 @@
 // @ts-strict-ignore
-import React, {
-  type ComponentType,
-  type MouseEventHandler,
-  type SVGProps,
-  type CSSProperties,
+import React from 'react';
+import type {
+  ComponentProps,
+  ComponentType,
+  CSSProperties,
+  SVGProps,
 } from 'react';
 
-import { theme } from '../../style';
-import { Block } from '../common/Block';
-import { View } from '../common/View';
+import { Block } from '@actual-app/components/block';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
 import { accountNameStyle } from './Account';
 import { ItemContent } from './ItemContent';
@@ -22,9 +23,10 @@ type SecondaryItemProps = {
     | ComponentType<SVGProps<SVGElement>>
     | ComponentType<SVGProps<SVGSVGElement>>;
   style?: CSSProperties;
-  onClick?: MouseEventHandler<HTMLDivElement>;
+  onClick?: ComponentProps<typeof ItemContent>['onClick'];
   bold?: boolean;
   indent?: number;
+  dataTestId?: string;
 };
 
 export function SecondaryItem({
@@ -35,6 +37,7 @@ export function SecondaryItem({
   onClick,
   bold,
   indent = 0,
+  dataTestId,
 }: SecondaryItemProps) {
   const content = (
     <View
@@ -52,7 +55,7 @@ export function SecondaryItem({
   );
 
   return (
-    <View style={{ flexShrink: 0, ...style }}>
+    <View data-testid={dataTestId} style={{ flexShrink: 0, ...style }}>
       <ItemContent
         style={{
           ...accountNameStyle,

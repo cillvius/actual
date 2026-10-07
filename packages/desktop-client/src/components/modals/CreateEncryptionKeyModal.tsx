@@ -1,40 +1,41 @@
 // @ts-strict-ignore
 import React, { useState } from 'react';
 import { Form } from 'react-aria-components';
-import { useTranslation, Trans } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
+import { ButtonWithLoading } from '@actual-app/components/button';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { InitialFocus } from '@actual-app/components/initial-focus';
+import { Input } from '@actual-app/components/input';
+import { Paragraph } from '@actual-app/components/paragraph';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
 import { css } from '@emotion/css';
 
-import { loadAllFiles, loadGlobalPrefs } from 'loot-core/client/actions';
-import { sync } from 'loot-core/client/app/appSlice';
-import { send } from 'loot-core/src/platform/client/fetch';
-import { getCreateKeyError } from 'loot-core/src/shared/errors';
-
-import { useDispatch } from '../../redux';
-import { styles, theme } from '../../style';
-import { ButtonWithLoading } from '../common/Button2';
-import { InitialFocus } from '../common/InitialFocus';
-import { Input } from '../common/Input';
-import { Link } from '../common/Link';
+import { sync } from '#app/appSlice';
+import { loadAllFiles } from '#budgetfiles/budgetfilesSlice';
+import { Link } from '#components/common/Link';
 import {
   Modal,
   ModalButtons,
   ModalCloseButton,
   ModalHeader,
-} from '../common/Modal';
-import { Paragraph } from '../common/Paragraph';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { useResponsive } from '../responsive/ResponsiveProvider';
+} from '#components/common/Modal';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+import { loadGlobalPrefs } from '#prefs/prefsSlice';
+import { useDispatch } from '#redux';
+import { getCreateKeyError } from '#util/error';
 
-type CreateEncryptionKeyModalProps = {
-  options: {
-    recreate?: boolean;
-  };
-};
+type CreateEncryptionKeyModalProps = Extract<
+  ModalType,
+  { name: 'create-encryption-key' }
+>['options'];
 
 export function CreateEncryptionKeyModal({
-  options = {},
+  recreate,
 }: CreateEncryptionKeyModalProps) {
   const { t } = useTranslation();
   const [password, setPassword] = useState('');
@@ -44,7 +45,7 @@ export function CreateEncryptionKeyModal({
   const { isNarrowWidth } = useResponsive();
   const dispatch = useDispatch();
 
-  const isRecreating = options.recreate;
+  const isRecreating = recreate;
 
   async function onCreateKey(close: () => void) {
     if (password !== '' && !loading) {
@@ -58,9 +59,9 @@ export function CreateEncryptionKeyModal({
         return;
       }
 
-      dispatch(loadGlobalPrefs());
-      dispatch(loadAllFiles());
-      dispatch(sync());
+      void dispatch(loadGlobalPrefs());
+      void dispatch(loadAllFiles());
+      void dispatch(sync());
 
       setLoading(false);
       close();
@@ -69,13 +70,13 @@ export function CreateEncryptionKeyModal({
 
   return (
     <Modal name="create-encryption-key">
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={
               isRecreating ? t('Generate new key') : t('Enable encryption')
             }
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View
             style={{
@@ -93,14 +94,15 @@ export function CreateEncryptionKeyModal({
                     We will generate a key based on a password and use it to
                     encrypt from now on.{' '}
                     <strong>This requires a sync reset</strong> and all other
-                    devices will have to revert to this version of your data.{' '}
+                    devices will have to revert to this version of your
+                    data.{' '}
                   </Trans>
                   <Link
                     variant="external"
                     to="https://actualbudget.org/docs/getting-started/sync/#end-to-end-encryption"
                     linkColor="purple"
                   >
-                    {t('Learn more')}
+                    <Trans>Learn more</Trans>
                   </Link>
                 </Paragraph>
                 <Paragraph>
@@ -113,7 +115,7 @@ export function CreateEncryptionKeyModal({
                     <li>
                       <Trans>
                         <strong>Important:</strong> if you forget this password{' '}
-                        <em>and</em> you don’t have any local copies of your
+                        <em>and</em> you don't have any local copies of your
                         data, you will lose access to all your data. The data
                         cannot be decrypted without the password.
                       </Trans>
@@ -126,7 +128,7 @@ export function CreateEncryptionKeyModal({
                     </li>
                     <li>
                       <Trans>
-                        If you’ve already downloaded your data on other devices,
+                        If you've already downloaded your data on other devices,
                         you will need to reset them. Actual will automatically
                         take you through this process.
                       </Trans>
@@ -171,7 +173,7 @@ export function CreateEncryptionKeyModal({
           <Form
             onSubmit={e => {
               e.preventDefault();
-              onCreateKey(close);
+              void onCreateKey(() => state.close());
             }}
           >
             <View style={{ alignItems: 'center' }}>
@@ -199,7 +201,7 @@ export function CreateEncryptionKeyModal({
                     width: isNarrowWidth ? '100%' : '50%',
                     height: isNarrowWidth ? styles.mobileMinHeight : undefined,
                   }}
-                  onChange={e => setPassword(e.target.value)}
+                  onChangeValue={setPassword}
                 />
               </InitialFocus>
               <Text style={{ marginTop: 5 }}>

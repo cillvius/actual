@@ -1,33 +1,39 @@
 // @ts-strict-ignore
 import React, { useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
+import { Button } from '@actual-app/components/button';
+import {
+  SvgCheveronDown,
+  SvgCheveronUp,
+} from '@actual-app/components/icons/v1';
+import { SvgNotesPaper } from '@actual-app/components/icons/v2';
+import { styles } from '@actual-app/components/styles';
+import type { CSSProperties } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import * as monthUtils from '@actual-app/core/shared/months';
 import { css } from '@emotion/css';
 
-import * as monthUtils from 'loot-core/src/shared/months';
+import { BudgetMonthMenu } from '#components/budget/tracking/budgetsummary/BudgetMonthMenu';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { Notes } from '#components/Notes';
+import { useLocale } from '#hooks/useLocale';
+import { useNotes } from '#hooks/useNotes';
+import { useUndo } from '#hooks/useUndo';
+import type { Modal as ModalType } from '#modals/modalsSlice';
 
-import { useNotes } from '../../hooks/useNotes';
-import { useUndo } from '../../hooks/useUndo';
-import { SvgCheveronDown, SvgCheveronUp } from '../../icons/v1';
-import { SvgNotesPaper } from '../../icons/v2';
-import { type CSSProperties, styles, theme } from '../../style';
-import { BudgetMonthMenu } from '../budget/tracking/budgetsummary/BudgetMonthMenu';
-import { Button } from '../common/Button2';
-import { Modal, ModalCloseButton, ModalHeader } from '../common/Modal';
-import { View } from '../common/View';
-import { Notes } from '../Notes';
-
-type TrackingBudgetMonthMenuModalProps = {
-  month: string;
-  onBudgetAction: (month: string, action: string, arg?: unknown) => void;
-  onEditNotes: (month: string) => void;
-};
+type TrackingBudgetMonthMenuModalProps = Extract<
+  ModalType,
+  { name: 'tracking-budget-month-menu' }
+>['options'];
 
 export function TrackingBudgetMonthMenuModal({
   month,
   onBudgetAction,
   onEditNotes,
 }: TrackingBudgetMonthMenuModalProps) {
+  const locale = useLocale();
   const { t } = useTranslation();
   const originalNotes = useNotes(`budget-${month}`);
   const { showUndoNotification } = useUndo();
@@ -57,7 +63,7 @@ export function TrackingBudgetMonthMenuModal({
     setShowMore(!showMore);
   };
 
-  const displayMonth = monthUtils.format(month, 'MMMM ‘yy');
+  const displayMonth = monthUtils.format(month, "MMMM ''yy", locale);
 
   return (
     <Modal
@@ -66,11 +72,11 @@ export function TrackingBudgetMonthMenuModal({
         style: { height: '50vh' },
       }}
     >
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={displayMonth}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View
             style={{
@@ -117,7 +123,7 @@ export function TrackingBudgetMonthMenuModal({
                     height={20}
                     style={{ paddingRight: 5 }}
                   />
-                  {t('Edit notes')}
+                  <Trans>Edit notes</Trans>
                 </Button>
               </View>
               <View>
@@ -147,7 +153,7 @@ export function TrackingBudgetMonthMenuModal({
                       style={{ paddingRight: 5 }}
                     />
                   )}
-                  {t('Actions')}
+                  <Trans>Actions</Trans>
                 </Button>
               </View>
             </View>
@@ -157,17 +163,17 @@ export function TrackingBudgetMonthMenuModal({
                 getItemStyle={() => defaultMenuItemStyle}
                 onCopyLastMonthBudget={() => {
                   onBudgetAction(month, 'copy-last');
-                  close();
+                  state.close();
                   showUndoNotification({
                     message: t(
-                      '{{displayMonth}} budgets have all been set to last month’s budgeted amounts.',
+                      "{{displayMonth}} budgets have all been set to last month's budgeted amounts.",
                       { displayMonth },
                     ),
                   });
                 }}
                 onSetBudgetsToZero={() => {
                   onBudgetAction(month, 'set-zero');
-                  close();
+                  state.close();
                   showUndoNotification({
                     message: t(
                       '{{displayMonth}} budgets have all been set to zero.',
@@ -177,18 +183,18 @@ export function TrackingBudgetMonthMenuModal({
                 }}
                 onSetMonthsAverage={numberOfMonths => {
                   onBudgetAction(month, `set-${numberOfMonths}-avg`);
-                  close();
+                  state.close();
                   showUndoNotification({
                     message: `${displayMonth} budgets have all been set to ${numberOfMonths === 12 ? 'yearly' : `${numberOfMonths} month`} average.`,
                   });
                 }}
                 onCheckTemplates={() => {
                   onBudgetAction(month, 'check-templates');
-                  close();
+                  state.close();
                 }}
                 onApplyBudgetTemplates={() => {
                   onBudgetAction(month, 'apply-goal-template');
-                  close();
+                  state.close();
                   showUndoNotification({
                     message: t(
                       '{{displayMonth}} budget templates have been applied.',
@@ -198,7 +204,7 @@ export function TrackingBudgetMonthMenuModal({
                 }}
                 onOverwriteWithBudgetTemplates={() => {
                   onBudgetAction(month, 'overwrite-goal-template');
-                  close();
+                  state.close();
                   showUndoNotification({
                     message: t(
                       '{{displayMonth}} budget templates have been overwritten.',

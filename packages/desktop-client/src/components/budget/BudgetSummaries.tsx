@@ -1,35 +1,35 @@
 import React, {
-  useContext,
-  useState,
-  useRef,
   useCallback,
+  useContext,
   useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
 } from 'react';
-import { useSpring, animated } from 'react-spring';
+import { animated, useSpring } from 'react-spring';
 
+import { View, viewStyles } from '@actual-app/components/view';
+import { addMonths, subMonths } from '@actual-app/core/shared/months';
 import { css } from '@emotion/css';
 
-import { addMonths, subMonths } from 'loot-core/src/shared/months';
+import { useResizeObserver } from '#hooks/useResizeObserver';
 
-import { useResizeObserver } from '../../hooks/useResizeObserver';
-import { View } from '../common/View';
-
-import { type BudgetSummary as EnvelopeBudgetSummary } from './envelope/budgetsummary/BudgetSummary';
 import { MonthsContext } from './MonthsContext';
-import { type BudgetSummary as TrackingBudgetSummary } from './tracking/budgetsummary/BudgetSummary';
 
-type BudgetSummariesProps = {
-  SummaryComponent: typeof TrackingBudgetSummary | typeof EnvelopeBudgetSummary;
-};
+import { useBudgetComponents } from '.';
 
-export function BudgetSummaries({ SummaryComponent }: BudgetSummariesProps) {
+export function BudgetSummaries() {
   const { months } = useContext(MonthsContext);
+  const [firstMonth] = months;
 
   const [widthState, setWidthState] = useState(0);
-  const [styles, spring] = useSpring(() => ({
-    x: 0,
-    config: { mass: 3, tension: 600, friction: 80 },
-  }));
+  const [styles, spring] = useSpring(
+    () => ({
+      from: { x: 0 },
+      config: { mass: 3, tension: 600, friction: 80 },
+    }),
+    [],
+  );
 
   const containerRef = useResizeObserver<HTMLDivElement>(
     useCallback(rect => {
@@ -37,15 +37,18 @@ export function BudgetSummaries({ SummaryComponent }: BudgetSummariesProps) {
     }, []),
   );
 
-  const prevMonth0 = useRef(months[0]);
-  const allMonths = [...months];
-  allMonths.unshift(subMonths(months[0], 1));
-  allMonths.push(addMonths(months[months.length - 1], 1));
+  const prevMonth0 = useRef(firstMonth);
+  const allMonths = useMemo(() => {
+    const all = [...months];
+    all.unshift(subMonths(firstMonth, 1));
+    all.push(addMonths(months[months.length - 1], 1));
+    return all;
+  }, [months, firstMonth]);
   const monthWidth = widthState / months.length;
 
   useLayoutEffect(() => {
     const prevMonth = prevMonth0.current;
-    const reversed = prevMonth > months[0];
+    const reversed = prevMonth > firstMonth;
     const offsetX = monthWidth;
     let from = reversed ? -offsetX * 2 : 0;
 
@@ -54,16 +57,20 @@ export function BudgetSummaries({ SummaryComponent }: BudgetSummariesProps) {
     }
 
     const to = -offsetX;
-    spring.start({ from: { x: from }, x: to });
-  }, [months[0]]);
+    if (from !== to) {
+      void spring.start({ from: { x: from }, to: { x: to } });
+    }
+  }, [spring, firstMonth, monthWidth, allMonths]);
 
   useLayoutEffect(() => {
-    prevMonth0.current = months[0];
-  }, [months[0]]);
+    prevMonth0.current = firstMonth;
+  }, [firstMonth]);
 
   useLayoutEffect(() => {
-    spring.start({ from: { x: -monthWidth }, to: { x: -monthWidth } });
-  }, [monthWidth]);
+    void spring.start({ to: { x: -monthWidth }, immediate: true });
+  }, [spring, monthWidth]);
+
+  const { SummaryComponent } = useBudgetComponents();
 
   return (
     <div
@@ -77,7 +84,7 @@ export function BudgetSummaries({ SummaryComponent }: BudgetSummariesProps) {
       ref={containerRef}
     >
       <animated.div
-        className="view"
+        className={viewStyles}
         style={{
           flexDirection: 'row',
           width: widthState,

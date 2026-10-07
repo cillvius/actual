@@ -1,36 +1,23 @@
-import React, { type ReactNode } from 'react';
+import React from 'react';
+import type { ReactNode } from 'react';
 
-import { View } from '../../common/View';
-import { ReportCard } from '../ReportCard';
+import { View } from '@actual-app/components/view';
+
+import { ReportCard } from '#components/reports/ReportCard';
 
 type MissingReportCardProps = {
+  widgetId: string;
   isEditing?: boolean;
-  onRemove: () => void;
   children: ReactNode;
 };
 
 export function MissingReportCard({
+  widgetId,
   isEditing,
-  onRemove,
   children,
 }: MissingReportCardProps) {
   return (
-    <ReportCard
-      isEditing={isEditing}
-      menuItems={[
-        {
-          name: 'remove',
-          text: 'Remove',
-        },
-      ]}
-      onMenuSelect={item => {
-        switch (item) {
-          case 'remove':
-            onRemove();
-            break;
-        }
-      }}
-    >
+    <ReportCard widgetId={widgetId} isEditing={isEditing}>
       <View
         style={{
           flex: 1,

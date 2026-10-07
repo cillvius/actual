@@ -1,23 +1,23 @@
 import React from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
-import * as monthUtils from 'loot-core/src/shared/months';
-import {
-  amountToCurrency,
-  integerToCurrency,
-  amountToInteger,
-} from 'loot-core/src/shared/util';
-import {
-  type balanceTypeOpType,
-  type DataEntity,
-} from 'loot-core/src/types/models/reports';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import * as monthUtils from '@actual-app/core/shared/months';
+import type {
+  balanceTypeOpType,
+  DataEntity,
+} from '@actual-app/core/types/models';
 
-import { theme, styles } from '../../style';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { PrivacyFilter } from '../PrivacyFilter';
+import { FinancialText } from '#components/FinancialText';
+import { PrivacyFilter } from '#components/PrivacyFilter';
+import { useDateFormat } from '#hooks/useDateFormat';
+import { useFormat } from '#hooks/useFormat';
+import { useLocale } from '#hooks/useLocale';
 
-import { ReportOptions } from './ReportOptions';
+import { getIntervalFormat, ReportOptions } from './ReportOptions';
 
 type ReportSummaryProps = {
   startDate: string;
@@ -36,16 +36,21 @@ export function ReportSummary({
   interval,
   intervalsCount,
 }: ReportSummaryProps) {
+  const locale = useLocale();
   const { t } = useTranslation();
+  const format = useFormat();
+  const dateFormat = useDateFormat() || 'MM/dd/yyyy';
+  const intervalFormat = getIntervalFormat(interval, dateFormat);
+
   const net =
     balanceTypeOp === 'netAssets'
-      ? 'DEPOSIT'
+      ? t('DEPOSIT')
       : balanceTypeOp === 'netDebts'
-        ? 'PAYMENT'
+        ? t('PAYMENT')
         : Math.abs(data.totalDebts) > Math.abs(data.totalAssets)
-          ? 'PAYMENT'
-          : 'DEPOSIT';
-  const average = amountToInteger(data[balanceTypeOp]) / intervalsCount;
+          ? t('PAYMENT')
+          : t('DEPOSIT');
+  const average = Math.round(data[balanceTypeOp] / intervalsCount);
   return (
     <View
       style={{
@@ -69,23 +74,10 @@ export function ReportSummary({
             fontWeight: 600,
           }}
         >
-          {monthUtils.format(
-            startDate,
-            ReportOptions.intervalFormat.get(interval) || '',
-          )}
-          {monthUtils.format(
-            startDate,
-            ReportOptions.intervalFormat.get(interval) || '',
-          ) !==
-            monthUtils.format(
-              endDate,
-              ReportOptions.intervalFormat.get(interval) || '',
-            ) &&
-            ' to ' +
-              monthUtils.format(
-                endDate,
-                ReportOptions.intervalFormat.get(interval) || '',
-              )}
+          {monthUtils.format(startDate, intervalFormat, locale)}
+          {monthUtils.format(startDate, intervalFormat, locale) !==
+            monthUtils.format(endDate, intervalFormat, locale) &&
+            ` ${t('to')} ` + monthUtils.format(endDate, intervalFormat, locale)}
         </Text>
       </View>
       <View
@@ -106,47 +98,14 @@ export function ReportSummary({
           }}
         >
           {balanceTypeOp === 'totalDebts'
-            ? 'TOTAL SPENDING'
+            ? t('TOTAL SPENDING')
             : balanceTypeOp === 'totalAssets'
-              ? 'TOTAL DEPOSITS'
-              : 'NET ' + net}
+              ? t('TOTAL DEPOSITS')
+              : balanceTypeOp === 'totalBudgeted'
+                ? t('TOTAL BUDGETED')
+                : t('NET {{net}}', { net })}
         </Text>
-        <Text
-          style={{
-            ...styles.veryLargeText,
-            alignItems: 'center',
-            marginBottom: 2,
-            fontWeight: 800,
-          }}
-        >
-          <PrivacyFilter>{amountToCurrency(data[balanceTypeOp])}</PrivacyFilter>
-        </Text>
-        <Text style={{ fontWeight: 600 }}>{t('For this time period')}</Text>
-      </View>
-      <View
-        style={{
-          backgroundColor: theme.pageBackground,
-          padding: 15,
-          justifyContent: 'center',
-          alignItems: 'center',
-          marginTop: 10,
-        }}
-      >
-        <Text
-          style={{
-            ...styles.mediumText,
-            alignItems: 'center',
-            marginBottom: 2,
-            fontWeight: 400,
-          }}
-        >
-          {balanceTypeOp === 'totalDebts'
-            ? 'AVERAGE SPENDING'
-            : balanceTypeOp === 'totalAssets'
-              ? 'AVERAGE DEPOSIT'
-              : 'AVERAGE NET'}
-        </Text>
-        <Text
+        <FinancialText
           style={{
             ...styles.veryLargeText,
             alignItems: 'center',
@@ -155,11 +114,59 @@ export function ReportSummary({
           }}
         >
           <PrivacyFilter>
-            {!isNaN(average) && integerToCurrency(Math.round(average))}
+            {format(data[balanceTypeOp], 'financial')}
           </PrivacyFilter>
-        </Text>
+        </FinancialText>
         <Text style={{ fontWeight: 600 }}>
-          Per {(ReportOptions.intervalMap.get(interval) || '').toLowerCase()}
+          <Trans>For this time period</Trans>
+        </Text>
+      </View>
+      <View
+        style={{
+          backgroundColor: theme.pageBackground,
+          padding: 15,
+          justifyContent: 'center',
+          alignItems: 'center',
+          marginTop: 10,
+        }}
+      >
+        <Text
+          style={{
+            ...styles.mediumText,
+            alignItems: 'center',
+            marginBottom: 2,
+            fontWeight: 400,
+          }}
+        >
+          {balanceTypeOp === 'totalDebts'
+            ? t('AVERAGE SPENDING')
+            : balanceTypeOp === 'totalAssets'
+              ? t('AVERAGE DEPOSIT')
+              : balanceTypeOp === 'totalBudgeted'
+                ? t('AVERAGE BUDGETED')
+                : t('AVERAGE NET')}
+        </Text>
+        <FinancialText
+          style={{
+            ...styles.veryLargeText,
+            alignItems: 'center',
+            marginBottom: 2,
+            fontWeight: 800,
+          }}
+        >
+          <PrivacyFilter>
+            {!isNaN(average) && format(average, 'financial')}
+          </PrivacyFilter>
+        </FinancialText>
+        <Text style={{ fontWeight: 600 }}>
+          <Trans>
+            Per{' '}
+            {{
+              interval: (
+                ReportOptions.intervalMap.get(interval) || ''
+              ).toLowerCase(),
+            }}
+          </Trans>
         </Text>
       </View>
     </View>

@@ -2,16 +2,18 @@
 import React, { useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { importBudget } from 'loot-core/src/client/actions/budgets';
+import { Block } from '@actual-app/components/block';
+import { ButtonWithLoading } from '@actual-app/components/button';
+import { Paragraph } from '@actual-app/components/paragraph';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
-import { useNavigate } from '../../../hooks/useNavigate';
-import { useDispatch } from '../../../redux';
-import { styles, theme } from '../../../style';
-import { Block } from '../../common/Block';
-import { ButtonWithLoading } from '../../common/Button2';
-import { Modal, ModalCloseButton, ModalHeader } from '../../common/Modal';
-import { Paragraph } from '../../common/Paragraph';
-import { View } from '../../common/View';
+import { importBudget } from '#budgetfiles/budgetfilesSlice';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { ImportProgress } from '#components/modals/manager/ImportProgress';
+import { useNavigate } from '#hooks/useNavigate';
+import { useDispatch } from '#redux';
 
 function getErrorMessage(error: string): string {
   switch (error) {
@@ -38,8 +40,8 @@ export function ImportYNAB4Modal() {
       setImporting(true);
       setError(null);
       try {
-        await dispatch(importBudget(res[0], 'ynab4'));
-        navigate('/budget');
+        await dispatch(importBudget({ filepath: res[0], type: 'ynab4' }));
+        void navigate('/budget');
       } catch (err) {
         setError(err.message);
       } finally {
@@ -49,12 +51,18 @@ export function ImportYNAB4Modal() {
   }
 
   return (
-    <Modal name="import-ynab4" containerProps={{ style: { width: 400 } }}>
-      {({ state: { close } }) => (
+    <Modal
+      name="import-ynab4"
+      isDismissable={!importing}
+      containerProps={{ style: { width: 400 } }}
+    >
+      {({ state }) => (
         <>
           <ModalHeader
             title={t('Import from YNAB4')}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={
+              !importing && <ModalCloseButton onPress={() => state.close()} />
+            }
           />
           <View style={{ ...styles.smallText, lineHeight: 1.5, marginTop: 20 }}>
             {error && (
@@ -74,23 +82,25 @@ export function ImportYNAB4Modal() {
               </Paragraph>
               <Paragraph>
                 <Trans>
-                  When you’ve located your data,{' '}
+                  When you've located your data,{' '}
                   <strong>compress it into a zip file</strong>. On macOS,
-                  right-click the folder and select “Compress”. On Windows,
-                  right-click and select “Send to &rarr; Compressed (zipped)
-                  folder”. Upload the zipped folder for importing.
+                  right-click the folder and select "Compress". On Windows,
+                  right-click and select "Send to &rarr; Compressed (zipped)
+                  folder". Upload the zipped folder for importing.
                 </Trans>
               </Paragraph>
-              <View>
-                <ButtonWithLoading
-                  variant="primary"
-                  autoFocus
-                  isLoading={importing}
-                  onPress={onImport}
-                >
-                  <Trans>Select zip file...</Trans>
-                </ButtonWithLoading>
-              </View>
+              {!importing && (
+                <View>
+                  <ButtonWithLoading
+                    variant="primary"
+                    autoFocus
+                    onPress={onImport}
+                  >
+                    <Trans>Select zip file...</Trans>
+                  </ButtonWithLoading>
+                </View>
+              )}
+              <ImportProgress />
             </View>
           </View>
         </>

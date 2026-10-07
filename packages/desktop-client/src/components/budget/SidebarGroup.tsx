@@ -1,43 +1,48 @@
 // @ts-strict-ignore
-import React, { type CSSProperties, useRef } from 'react';
-import { type ConnectDragSource } from 'react-dnd';
+import React, { useRef } from 'react';
+import type { CSSProperties, RefCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useContextMenu } from '../../hooks/useContextMenu';
-import { useFeatureFlag } from '../../hooks/useFeatureFlag';
-import { SvgExpandArrow } from '../../icons/v0';
-import { SvgCheveronDown } from '../../icons/v1';
-import { theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Menu } from '../common/Menu';
-import { Popover } from '../common/Popover';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { NotesButton } from '../NotesButton';
-import { InputCell } from '../table';
+import { Button } from '@actual-app/components/button';
+import { SvgAdd, SvgExpandArrow } from '@actual-app/components/icons/v0';
+import { SvgCheveronDown } from '@actual-app/components/icons/v1';
+import { Menu } from '@actual-app/components/menu';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { Tooltip } from '@actual-app/components/tooltip';
+import { View } from '@actual-app/components/view';
+import type {
+  CategoryEntity,
+  CategoryGroupEntity,
+} from '@actual-app/core/types/models';
+import { css, cx } from '@emotion/css';
+
+import { NotesButton } from '#components/NotesButton';
+import { InputCell } from '#components/table';
+import { useContextMenu } from '#hooks/useContextMenu';
+import { useFeatureFlag } from '#hooks/useFeatureFlag';
+import { useGlobalPref } from '#hooks/useGlobalPref';
 
 type SidebarGroupProps = {
-  group: {
-    id: string;
-    hidden: number;
-    categories: object[];
-    is_income: number;
-    name: string;
-    sort_order: number;
-    tombstone: number;
-  };
+  group: CategoryGroupEntity;
   editing?: boolean;
   collapsed: boolean;
   dragPreview?: boolean;
-  innerRef?: ConnectDragSource;
+  innerRef?: RefCallback<HTMLDivElement>;
   style?: CSSProperties;
-  onEdit?: (id: string) => void;
-  onSave?: (group: object) => Promise<void>;
-  onDelete?: (id: string) => Promise<void>;
-  onApplyBudgetTemplatesInGroup?: (categories: object[]) => void;
-  onShowNewCategory?: (groupId: string) => void;
+  onEdit?: (id: CategoryGroupEntity['id']) => void;
+  onSave?: (group: CategoryGroupEntity) => void;
+  onDelete?: (id: CategoryGroupEntity['id']) => void;
+  onApplyBudgetTemplatesInGroup?: (
+    categories: Array<CategoryEntity['id']>,
+  ) => void;
+  onSortCategories?: (
+    groupId: CategoryGroupEntity['id'],
+    direction: 'asc' | 'desc',
+  ) => void;
+  onShowNewCategory?: (groupId: CategoryGroupEntity['id']) => void;
   onHideNewGroup?: () => void;
-  onToggleCollapse?: (id: string) => void;
+  onToggleCollapse?: (id: CategoryGroupEntity['id']) => void;
 };
 
 export function SidebarGroup({
@@ -51,17 +56,61 @@ export function SidebarGroup({
   onSave,
   onDelete,
   onApplyBudgetTemplatesInGroup,
+  onSortCategories,
   onShowNewCategory,
   onHideNewGroup,
   onToggleCollapse,
 }: SidebarGroupProps) {
   const { t } = useTranslation();
   const isGoalTemplatesEnabled = useFeatureFlag('goalTemplatesEnabled');
+  const [categoryExpandedStatePref] = useGlobalPref('categoryExpandedState');
+  const categoryExpandedState = categoryExpandedStatePref ?? 0;
 
   const temporary = group.id === 'new';
-  const { setMenuOpen, menuOpen, handleContextMenu, resetPosition, position } =
-    useContextMenu();
+  const canSortCategories =
+    !!onSortCategories && (group.categories?.length ?? 0) > 1;
   const triggerRef = useRef(null);
+  const { handleContextMenu } = useContextMenu({
+    triggerRef,
+    items: [
+      onEdit && {
+        name: 'rename',
+        text: t('Rename'),
+        onClick: () => onEdit(group.id),
+      },
+      onSave && {
+        name: 'toggle-visibility',
+        text: group.hidden ? t('Show') : t('Hide'),
+        onClick: () => onSave({ ...group, hidden: !group.hidden }),
+        hidden: group.is_income,
+      },
+      onDelete && {
+        name: 'delete',
+        text: t('Delete'),
+        onClick: () => onDelete(group.id),
+      },
+      canSortCategories && Menu.line,
+      canSortCategories && {
+        name: 'sort-asc',
+        text: t('Sort A to Z'),
+        onClick: () => onSortCategories(group.id, 'asc'),
+      },
+      canSortCategories && {
+        name: 'sort-desc',
+        text: t('Sort Z to A'),
+        onClick: () => onSortCategories(group.id, 'desc'),
+      },
+      isGoalTemplatesEnabled &&
+        onApplyBudgetTemplatesInGroup && {
+          name: 'apply-multiple-category-template',
+          text: t('Overwrite with templates'),
+          onClick: () =>
+            onApplyBudgetTemplatesInGroup(
+              group.categories.filter(c => !c.hidden).map(c => c.id),
+            ),
+        },
+    ],
+  });
 
   const displayed = (
     <View
@@ -76,7 +125,6 @@ export function SidebarGroup({
       onClick={() => {
         onToggleCollapse(group.id);
       }}
-      onContextMenu={handleContextMenu}
     >
       {!dragPreview && (
         <SvgExpandArrow
@@ -108,70 +156,39 @@ export function SidebarGroup({
             <Button
               variant="bare"
               className="hover-visible"
-              onPress={() => {
-                resetPosition();
-                setMenuOpen(true);
-              }}
               style={{ padding: 3 }}
+              onPress={handleContextMenu}
             >
               <SvgCheveronDown width={14} height={14} />
             </Button>
-
-            <Popover
-              triggerRef={triggerRef}
-              placement="bottom start"
-              isOpen={menuOpen}
-              onOpenChange={() => setMenuOpen(false)}
-              style={{ width: 200, margin: 1 }}
-              isNonModal
-              {...position}
-            >
-              <Menu
-                onMenuSelect={type => {
-                  if (type === 'rename') {
-                    onEdit(group.id);
-                  } else if (type === 'add-category') {
-                    onShowNewCategory(group.id);
-                  } else if (type === 'delete') {
-                    onDelete(group.id);
-                  } else if (type === 'toggle-visibility') {
-                    onSave({ ...group, hidden: !group.hidden });
-                  } else if (type === 'apply-multiple-category-template') {
-                    onApplyBudgetTemplatesInGroup?.(
-                      group.categories
-                        .filter(c => !c['hidden'])
-                        .map(c => c['id']),
-                    );
-                  }
-                  setMenuOpen(false);
-                }}
-                items={[
-                  { name: 'add-category', text: t('Add category') },
-                  { name: 'rename', text: t('Rename') },
-                  !group.is_income && {
-                    name: 'toggle-visibility',
-                    text: group.hidden ? 'Show' : 'Hide',
-                  },
-                  onDelete && { name: 'delete', text: t('Delete') },
-                  ...(isGoalTemplatesEnabled
-                    ? [
-                        {
-                          name: 'apply-multiple-category-template',
-                          text: t('Apply budget templates'),
-                        },
-                      ]
-                    : []),
-                ]}
-              />
-            </Popover>
           </View>
           <View style={{ flex: 1 }} />
-          <View style={{ flexShrink: 0 }}>
-            <NotesButton
-              id={group.id}
-              style={dragPreview && { color: 'currentColor' }}
-              defaultColor={theme.pageTextLight}
-            />
+          <View
+            style={{
+              flexShrink: 0,
+              flexDirection: 'row',
+              alignItems: 'center',
+            }}
+          >
+            <Tooltip content={t('Add category')} disablePointerEvents>
+              <Button
+                variant="bare"
+                aria-label={t('Add category')}
+                className={cx(
+                  css({
+                    color: theme.pageTextLight,
+                  }),
+                  'hover-visible',
+                )}
+                onPress={() => {
+                  onShowNewCategory?.(group.id);
+                }}
+              >
+                <SvgAdd style={{ width: 10, height: 10, flexShrink: 0 }} />
+              </Button>
+            </Tooltip>
+
+            <NotesButton id={group.id} defaultColor={theme.pageTextLight} />
           </View>
         </>
       )}
@@ -183,8 +200,8 @@ export function SidebarGroup({
       innerRef={innerRef}
       style={{
         ...style,
-        width: 200,
-        backgroundColor: theme.tableRowHeaderBackground,
+        width: 200 + 100 * categoryExpandedState,
+        backgroundColor: theme.budgetHeaderCurrentMonth,
         overflow: 'hidden',
         '& .hover-visible': {
           display: 'none',

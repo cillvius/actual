@@ -1,11 +1,12 @@
 import React from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { useSyncedPref } from '../../hooks/useSyncedPref';
-import { Button } from '../common/Button2';
-import { Link } from '../common/Link';
-import { Modal, ModalCloseButton, ModalHeader } from '../common/Modal';
-import { Paragraph } from '../common/Paragraph';
+import { Button } from '@actual-app/components/button';
+import { Paragraph } from '@actual-app/components/paragraph';
+
+import { Link } from '#components/common/Link';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { useSyncedPref } from '#hooks/useSyncedPref';
 
 export function CategoryLearning() {
   const { t } = useTranslation();
@@ -18,11 +19,11 @@ export function CategoryLearning() {
       name="payee-category-learning"
       containerProps={{ style: { width: 600 } }}
     >
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={t('Category Learning')}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <Paragraph>
             <Trans>

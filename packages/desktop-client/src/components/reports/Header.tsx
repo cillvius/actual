@@ -1,61 +1,86 @@
-import { type ComponentProps, type ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import * as monthUtils from 'loot-core/src/shared/months';
-import {
-  type RuleConditionEntity,
-  type TimeFrame,
-} from 'loot-core/types/models';
-import { type SyncedPrefs } from 'loot-core/types/prefs';
+import { Button } from '@actual-app/components/button';
+import { DateRangePicker } from '@actual-app/components/date-range-picker';
+import type {
+  DateRangeGranularity,
+  DateRangePreset,
+} from '@actual-app/components/date-range-picker';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { SpaceBetween } from '@actual-app/components/space-between';
+import { View } from '@actual-app/components/view';
+import * as monthUtils from '@actual-app/core/shared/months';
+import type {
+  RuleConditionEntity,
+  TimeFrame,
+} from '@actual-app/core/types/models';
+import type { SyncedPrefs } from '@actual-app/core/types/prefs';
 
-import { Button } from '../common/Button2';
-import { Select } from '../common/Select';
-import { SpaceBetween } from '../common/SpaceBetween';
-import { View } from '../common/View';
-import { AppliedFilters } from '../filters/AppliedFilters';
-import { FilterButton } from '../filters/FiltersMenu';
-import { useResponsive } from '../responsive/ResponsiveProvider';
+import { AppliedFilters } from '#components/filters/AppliedFilters';
+import { FilterButton } from '#components/filters/FiltersMenu';
+import { getFirstDayOfWeek } from '#components/select/getFirstDayOfWeek';
+import { useDateFormat } from '#hooks/useDateFormat';
+import { useLanguage } from '#hooks/useLocale';
 
-import { getLiveRange } from './getLiveRange';
-import {
-  calculateTimeRange,
-  getFullRange,
-  getLatestRange,
-  validateEnd,
-  validateStart,
-} from './reportRanges';
+import { buildDateRangePresets } from './dateRangePresets';
+import { calculateTimeRange } from './reportRanges';
 
 type HeaderProps = {
   start: TimeFrame['start'];
   end: TimeFrame['end'];
   mode?: TimeFrame['mode'];
   show1Month?: boolean;
-  allMonths: Array<{ name: string; pretty: string }>;
+  showFutureRange?: boolean;
+  hideModeToggle?: boolean;
+  allMonths: Array<{ name: string }>;
   earliestTransaction: string;
+  latestTransaction: string;
   firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx'];
   onChangeDates: (
     start: TimeFrame['start'],
     end: TimeFrame['end'],
     mode: TimeFrame['mode'],
   ) => void;
-  filters?: RuleConditionEntity[];
-  conditionsOp: 'and' | 'or';
-  onApply?: (conditions: RuleConditionEntity) => void;
-  onUpdateFilter: ComponentProps<typeof AppliedFilters>['onUpdate'];
-  onDeleteFilter: ComponentProps<typeof AppliedFilters>['onDelete'];
-  onConditionsOpChange: ComponentProps<
-    typeof AppliedFilters
-  >['onConditionsOpChange'];
+  // Granularities the picker offers; defaults to month-only. In day mode the
+  // picker emits `yyyy-MM-dd` start/end.
+  granularities?: DateRangeGranularity[];
   children?: ReactNode;
-};
+  inlineContent?: ReactNode;
+  // no separate category filter; use main filters instead
+  filterExclude?: string[];
+  filterInclude?: string[];
+} & (
+  | {
+      filters: RuleConditionEntity[];
+      onApply: (conditions: RuleConditionEntity) => void;
+      onUpdateFilter: ComponentProps<typeof AppliedFilters>['onUpdate'];
+      onDeleteFilter: ComponentProps<typeof AppliedFilters>['onDelete'];
+      conditionsOp: 'and' | 'or';
+      onConditionsOpChange: ComponentProps<
+        typeof AppliedFilters
+      >['onConditionsOpChange'];
+    }
+  | {
+      filters?: never;
+      onApply?: never;
+      onUpdateFilter?: never;
+      onDeleteFilter?: never;
+      conditionsOp?: never;
+      onConditionsOpChange?: never;
+    }
+);
 
 export function Header({
   start,
   end,
   mode,
   show1Month,
+  showFutureRange,
+  hideModeToggle,
   allMonths,
   earliestTransaction,
+  latestTransaction,
   firstDayOfWeekIdx,
   onChangeDates,
   filters,
@@ -64,18 +89,27 @@ export function Header({
   onUpdateFilter,
   onDeleteFilter,
   onConditionsOpChange,
+  granularities,
   children,
+  inlineContent,
+  filterExclude,
+  filterInclude,
 }: HeaderProps) {
   const { t } = useTranslation();
   const { isNarrowWidth } = useResponsive();
-  function convertToMonth(
-    start: string,
-    end: string,
-    _: TimeFrame['mode'],
-    mode: TimeFrame['mode'],
-  ): [string, string, TimeFrame['mode']] {
-    return [monthUtils.getMonth(start), monthUtils.getMonth(end), mode];
-  }
+  const language = useLanguage();
+  const dateFormat = useDateFormat() || 'MM/dd/yyyy';
+
+  const presets: DateRangePreset[] = buildDateRangePresets({
+    t,
+    onSelectRange: range => onChangeDates(...range),
+    earliestTransaction,
+    latestTransaction,
+    show1Month,
+    showFutureRange,
+    includeAllTime: allMonths.length > 0,
+    firstDayOfWeekIdx,
+  });
 
   return (
     <View
@@ -85,14 +119,14 @@ export function Header({
         flexShrink: 0,
       }}
     >
-      <SpaceBetween
-        direction={isNarrowWidth ? 'vertical' : 'horizontal'}
+      <View
         style={{
+          display: 'grid',
           alignItems: isNarrowWidth ? 'flex-start' : 'center',
         }}
       >
         <SpaceBetween gap={isNarrowWidth ? 5 : undefined}>
-          {mode && (
+          {mode && !hideModeToggle && (
             <Button
               variant={mode === 'static' ? 'normal' : 'primary'}
               onPress={() => {
@@ -110,137 +144,68 @@ export function Header({
             </Button>
           )}
 
-          <SpaceBetween gap={5}>
-            <Select
-              onChange={newValue =>
-                onChangeDates(
-                  ...validateStart(
-                    allMonths[allMonths.length - 1].name,
-                    newValue,
-                    end,
-                  ),
-                )
-              }
-              value={start}
-              defaultLabel={monthUtils.format(start, 'MMMM, yyyy')}
-              options={allMonths.map(({ name, pretty }) => [name, pretty])}
-            />
-            <View>{t('to')}</View>
-            <Select
-              onChange={newValue =>
-                onChangeDates(
-                  ...validateEnd(
-                    allMonths[allMonths.length - 1].name,
-                    start,
-                    newValue,
-                  ),
-                )
-              }
-              value={end}
-              options={allMonths.map(({ name, pretty }) => [name, pretty])}
-              style={{ marginRight: 10 }}
-            />
-          </SpaceBetween>
-        </SpaceBetween>
-
-        <SpaceBetween gap={3}>
-          {show1Month && (
-            <Button
-              variant="bare"
-              onPress={() => onChangeDates(...getLatestRange(1))}
-            >
-              {t('1 month')}
-            </Button>
-          )}
-          <Button
-            variant="bare"
-            onPress={() => onChangeDates(...getLatestRange(2))}
-          >
-            {t('3 months')}
-          </Button>
-          <Button
-            variant="bare"
-            onPress={() => onChangeDates(...getLatestRange(5))}
-          >
-            {t('6 months')}
-          </Button>
-          <Button
-            variant="bare"
-            onPress={() => onChangeDates(...getLatestRange(11))}
-          >
-            {t('1 year')}
-          </Button>
-          <Button
-            variant="bare"
-            onPress={() =>
-              onChangeDates(
-                ...convertToMonth(
-                  ...getLiveRange(
-                    'Year to date',
-                    earliestTransaction,
-                    true,
-                    firstDayOfWeekIdx,
-                  ),
-                  'yearToDate',
-                ),
-              )
+          <DateRangePicker
+            start={start}
+            end={end}
+            granularities={granularities}
+            // allMonths is newest-first and may be empty before reports load.
+            minDate={
+              allMonths.length
+                ? allMonths[allMonths.length - 1].name
+                : monthUtils.currentMonth()
             }
-          >
-            {t('Year to date')}
-          </Button>
-          <Button
-            variant="bare"
-            onPress={() =>
-              onChangeDates(
-                ...convertToMonth(
-                  ...getLiveRange(
-                    'Last year',
-                    earliestTransaction,
-                    false,
-                    firstDayOfWeekIdx,
-                  ),
-                  'lastYear',
-                ),
-              )
+            maxDate={
+              showFutureRange
+                ? undefined
+                : allMonths.length
+                  ? allMonths[0].name
+                  : monthUtils.currentMonth()
             }
-          >
-            {t('Last year')}
-          </Button>
-          <Button
-            variant="bare"
-            onPress={() =>
-              onChangeDates(
-                ...getFullRange(allMonths[allMonths.length - 1].name),
-              )
+            firstDayOfWeek={getFirstDayOfWeek(firstDayOfWeekIdx)}
+            locale={language}
+            formatDayLabel={date => monthUtils.format(date, dateFormat)}
+            labels={{
+              selectBy: t('Select by'),
+              quickSelect: t('Quick select'),
+              month: t('Month'),
+              day: t('Day'),
+              previous: t('Previous'),
+              next: t('Next'),
+              previousMonth: t('Previous month'),
+              nextMonth: t('Next month'),
+              year: t('Year'),
+              dateRange: t('Date range'),
+            }}
+            presets={presets}
+            onChangeDates={(newStart, newEnd) =>
+              onChangeDates(newStart, newEnd, 'static')
             }
-          >
-            {t('All time')}
-          </Button>
-
+          />
           {filters && (
             <FilterButton
               compact={isNarrowWidth}
               onApply={onApply}
               hover={false}
-              exclude={undefined}
+              exclude={filterExclude}
+              include={filterInclude}
             />
           )}
+          {inlineContent}
         </SpaceBetween>
 
-        {children ? (
-          <View
+        {children && (
+          <SpaceBetween
+            gap={isNarrowWidth ? 5 : undefined}
             style={{
-              flex: 1,
-              flexDirection: 'row',
-              justifyContent: 'flex-end',
+              gridColumn: 2,
+              justifySelf: 'flex-end',
+              alignSelf: 'flex-start',
             }}
           >
             {children}
-          </View>
-        ) : (
-          <View style={{ flex: 1 }} />
+          </SpaceBetween>
         )}
-      </SpaceBetween>
+      </View>
 
       {filters && filters.length > 0 && (
         <View style={{ marginTop: 5 }}>

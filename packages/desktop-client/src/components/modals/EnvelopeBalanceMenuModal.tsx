@@ -1,30 +1,31 @@
-import React, {
-  type ComponentPropsWithoutRef,
-  type CSSProperties,
-} from 'react';
-import { useTranslation } from 'react-i18next';
+import React from 'react';
+import type { CSSProperties } from 'react';
+import { Trans } from 'react-i18next';
 
-import { envelopeBudget } from 'loot-core/client/queries';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
-import { useCategory } from '../../hooks/useCategory';
-import { theme, styles } from '../../style';
 import {
   BalanceWithCarryover,
   CarryoverIndicator,
-} from '../budget/BalanceWithCarryover';
-import { BalanceMenu } from '../budget/envelope/BalanceMenu';
+} from '#components/budget/BalanceWithCarryover';
+import { BalanceMenu } from '#components/budget/envelope/BalanceMenu';
 import {
   Modal,
   ModalCloseButton,
   ModalHeader,
   ModalTitle,
-} from '../common/Modal';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { CellValueText } from '../spreadsheet/CellValue';
+} from '#components/common/Modal';
+import { CellValueText } from '#components/spreadsheet/CellValue';
+import { useCategory } from '#hooks/useCategory';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+import { envelopeBudget } from '#spreadsheet/bindings';
 
-type EnvelopeBalanceMenuModalProps = ComponentPropsWithoutRef<
-  typeof BalanceMenu
+type EnvelopeBalanceMenuModalProps = Omit<
+  Extract<ModalType, { name: 'envelope-balance-menu' }>['options'],
+  'month'
 >;
 
 export function EnvelopeBalanceMenuModal({
@@ -40,8 +41,7 @@ export function EnvelopeBalanceMenuModal({
     borderTop: `1px solid ${theme.pillBorder}`,
   };
 
-  const { t } = useTranslation();
-  const category = useCategory(categoryId);
+  const { data: category } = useCategory(categoryId);
 
   if (!category) {
     return null;
@@ -49,11 +49,11 @@ export function EnvelopeBalanceMenuModal({
 
   return (
     <Modal name="envelope-balance-menu">
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={<ModalTitle title={category.name} shrinkOnOverflow />}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View
             style={{
@@ -62,16 +62,12 @@ export function EnvelopeBalanceMenuModal({
               marginBottom: 20,
             }}
           >
-            <Text
-              style={{
-                fontSize: 17,
-                fontWeight: 400,
-              }}
-            >
-              {t('Balance')}
+            <Text size="extra-large" style={{ fontWeight: 400 }}>
+              <Trans>Balance</Trans>
             </Text>
             <BalanceWithCarryover
               isDisabled
+              shouldInlineGoalStatus
               carryover={envelopeBudget.catCarryover(categoryId)}
               balance={envelopeBudget.catBalance(categoryId)}
               goal={envelopeBudget.catGoal(categoryId)}

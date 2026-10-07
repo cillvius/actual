@@ -1,11 +1,12 @@
 import { useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { addNotification } from 'loot-core/client/actions';
-import { type Notification } from 'loot-core/client/state-types/notifications';
-import { redo, undo } from 'loot-core/client/undo';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
 
-import { useResponsive } from '../components/responsive/ResponsiveProvider';
-import { useDispatch } from '../redux';
+import { addNotification } from '#notifications/notificationsSlice';
+import type { Notification } from '#notifications/notificationsSlice';
+import { useDispatch } from '#redux';
+import { redo, undo } from '#undo';
 
 type UndoActions = {
   undo: () => void;
@@ -19,6 +20,7 @@ const timeout = 10000;
 export function useUndo(): UndoActions {
   const dispatch = useDispatch();
   const { isNarrowWidth } = useResponsive();
+  const { t } = useTranslation();
 
   const showUndoNotification = useCallback(
     (notification: Notification) => {
@@ -28,17 +30,19 @@ export function useUndo(): UndoActions {
 
       dispatch(
         addNotification({
-          type: 'message',
-          timeout,
-          button: {
-            title: 'Undo',
-            action: undo,
+          notification: {
+            type: 'message',
+            timeout,
+            button: {
+              title: t('Undo'),
+              action: undo,
+            },
+            ...notification,
           },
-          ...notification,
         }),
       );
     },
-    [dispatch, isNarrowWidth],
+    [dispatch, isNarrowWidth, t],
   );
 
   const showRedoNotification = useCallback(
@@ -49,17 +53,19 @@ export function useUndo(): UndoActions {
 
       dispatch(
         addNotification({
-          type: 'message',
-          timeout,
-          button: {
-            title: 'Redo',
-            action: redo,
+          notification: {
+            type: 'message',
+            timeout,
+            button: {
+              title: t('Redo'),
+              action: redo,
+            },
+            ...notification,
           },
-          ...notification,
         }),
       );
     },
-    [dispatch, isNarrowWidth],
+    [dispatch, isNarrowWidth, t],
   );
 
   return {

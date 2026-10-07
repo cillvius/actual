@@ -1,4 +1,5 @@
-import { parseDate } from './utils';
+import { filterByStartDate, parseCategoryFields, parseDate } from './utils';
+import type { ImportTransaction } from './utils';
 
 describe('Import transactions', () => {
   describe('date parsing', () => {
@@ -83,6 +84,7 @@ describe('Import transactions', () => {
           ['Dec 24, 2020', '2020-12-24'],
           ['Dec. 24, 2020', '2020-12-24'],
           ['December 24, 2020', '2020-12-24'],
+          ['Sept 6, 2026', '2026-09-06'],
           ['12242020', '2020-12-24'],
           ['1 24 2020', '2020-01-24'],
           ['01 24 2020', '2020-01-24'],
@@ -118,6 +120,7 @@ describe('Import transactions', () => {
           ['24 Dec 2020', '2020-12-24'],
           ['24 Dec. 2020', '2020-12-24'],
           ['24 December 2020', '2020-12-24'],
+          ['6 Sept 2026', '2026-09-06'],
           ['24122020', '2020-12-24'],
           ['24 12 2020 ', '2020-12-24'],
           ['2 12 2020', '2020-12-02'],
@@ -137,6 +140,8 @@ describe('Import transactions', () => {
           ['24 Dec 20', '2020-12-24'],
           ['24 Dec. 20', '2020-12-24'],
           ['24 December 20', '2020-12-24'],
+          ['06 Sept 26', '2026-09-06'],
+          ['06 Sept. 26', '2026-09-06'],
           ['241220', '2020-12-24'],
           ['2412 20 ', '2020-12-24'],
           ['24-12-20', '2020-12-24'],
@@ -163,5 +168,141 @@ describe('Import transactions', () => {
         });
       },
     );
+  });
+
+  describe('filterByStartDate', () => {
+    function makeTrans(
+      overrides: Partial<ImportTransaction>,
+    ): ImportTransaction {
+      return {
+        trx_id: '0',
+        existing: false,
+        ignored: false,
+        selected: true,
+        selected_merge: false,
+        amount: 0,
+        inflow: 0,
+        outflow: 0,
+        inOut: '',
+        ...overrides,
+      };
+    }
+
+    it('returns all transactions when startDate is empty', () => {
+      const transactions = [
+        makeTrans({ trx_id: '0', date: '2024-01-15' }),
+        makeTrans({ trx_id: '1', date: '2024-02-20' }),
+      ];
+      const result = filterByStartDate(transactions, '', true, null, null);
+      expect(result).toHaveLength(2);
+    });
+
+    it('filters out transactions before startDate for pre-parsed dates', () => {
+      const transactions = [
+        makeTrans({ trx_id: '0', date: '2024-01-15' }),
+        makeTrans({ trx_id: '1', date: '2024-02-20' }),
+        makeTrans({ trx_id: '2', date: '2024-03-01' }),
+      ];
+      const result = filterByStartDate(
+        transactions,
+        '2024-02-01',
+        true,
+        null,
+        null,
+      );
+      expect(result).toHaveLength(2);
+      expect(result.map(t => t.trx_id)).toEqual(['1', '2']);
+    });
+
+    it('includes transactions on the exact startDate', () => {
+      const transactions = [makeTrans({ trx_id: '0', date: '2024-02-01' })];
+      const result = filterByStartDate(
+        transactions,
+        '2024-02-01',
+        true,
+        null,
+        null,
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    it('keeps transactions with unparseable dates', () => {
+      const transactions = [makeTrans({ trx_id: '0', date: 'invalid' })];
+      const result = filterByStartDate(
+        transactions,
+        '2024-02-01',
+        false,
+        null,
+        'mm dd yyyy',
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    it('works with CSV dates requiring date format parsing', () => {
+      const transactions = [
+        makeTrans({ trx_id: '0', date: '01/15/2024' }),
+        makeTrans({ trx_id: '1', date: '03/01/2024' }),
+      ];
+      const result = filterByStartDate(
+        transactions,
+        '2024-02-01',
+        false,
+        null,
+        'mm dd yyyy',
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0].trx_id).toBe('1');
+    });
+
+    it('works with field mappings for CSV', () => {
+      const transactions = [
+        makeTrans({
+          trx_id: '0',
+          Date: '01/15/2024',
+        } satisfies Partial<ImportTransaction>),
+        makeTrans({
+          trx_id: '1',
+          Date: '03/01/2024',
+        } satisfies Partial<ImportTransaction>),
+      ];
+      const fieldMappings = {
+        date: 'Date',
+        amount: null,
+        payee: null,
+        notes: null,
+        inOut: null,
+        category: null,
+        outflow: null,
+        inflow: null,
+      };
+      const result = filterByStartDate(
+        transactions,
+        '2024-02-01',
+        false,
+        fieldMappings,
+        'mm dd yyyy',
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0].trx_id).toBe('1');
+    });
+  });
+
+  describe('parseCategoryFields', () => {
+    const categories = [
+      { id: 'cat-income', name: 'Income' },
+      { id: 'cat-deposits', name: 'Deposits' },
+    ];
+
+    it('returns the category id when CSV category text matches a category name', () => {
+      expect(parseCategoryFields({ category: 'Deposits' }, categories)).toBe(
+        'cat-deposits',
+      );
+    });
+
+    it('returns null for unresolved CSV category text', () => {
+      expect(
+        parseCategoryFields({ category: 'Missing category' }, categories),
+      ).toBeNull();
+    });
   });
 });

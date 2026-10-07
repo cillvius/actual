@@ -1,30 +1,37 @@
-import React, { type ComponentPropsWithoutRef } from 'react';
-import { useTranslation } from 'react-i18next';
+import React from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 
-import * as monthUtils from 'loot-core/src/shared/months';
+import { Button } from '@actual-app/components/button';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import * as monthUtils from '@actual-app/core/shared/months';
 
-import { theme } from '../../style';
-import { CategoryAutocomplete } from '../autocomplete/CategoryAutocomplete';
+import { CategoryAutocomplete } from '#components/autocomplete/CategoryAutocomplete';
 import {
-  ModalCloseButton,
   Modal,
-  ModalTitle,
+  ModalCloseButton,
   ModalHeader,
-} from '../common/Modal';
-import { View } from '../common/View';
-import { SectionLabel } from '../forms';
-import { useResponsive } from '../responsive/ResponsiveProvider';
-import { NamespaceContext } from '../spreadsheet/NamespaceContext';
+  ModalTitle,
+} from '#components/common/Modal';
+import { SectionLabel } from '#components/forms';
+import { SheetNameProvider } from '#hooks/useSheetName';
+import type { Modal as ModalType } from '#modals/modalsSlice';
 
-type CategoryAutocompleteModalProps = {
-  autocompleteProps: ComponentPropsWithoutRef<typeof CategoryAutocomplete>;
-  onClose: () => void;
-  month?: string;
-};
+type CategoryAutocompleteModalProps = Extract<
+  ModalType,
+  { name: 'category-autocomplete' }
+>['options'];
 
 export function CategoryAutocompleteModal({
-  autocompleteProps,
+  title,
   month,
+  onSelect,
+  categoryGroups,
+  showHiddenCategories,
+  showNoneOption,
+  closeOnSelect,
+  clearOnSelect,
   onClose,
 }: CategoryAutocompleteModalProps) {
   const { t } = useTranslation();
@@ -41,24 +48,26 @@ export function CategoryAutocompleteModal({
       onClose={onClose}
       containerProps={{
         style: {
-          height: isNarrowWidth ? '85vh' : 275,
+          height: isNarrowWidth
+            ? 'calc(var(--visual-viewport-height) * 0.85)'
+            : 275,
           backgroundColor: theme.menuAutoCompleteBackground,
         },
       }}
     >
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           {isNarrowWidth && (
             <ModalHeader
               title={
                 <ModalTitle
-                  title={t('Category')}
+                  title={title || t('Category')}
                   getStyle={() => ({ color: theme.menuAutoCompleteText })}
                 />
               }
               rightContent={
                 <ModalCloseButton
-                  onPress={close}
+                  onPress={() => state.close()}
                   style={{ color: theme.menuAutoCompleteText }}
                 />
               }
@@ -76,20 +85,38 @@ export function CategoryAutocompleteModal({
               />
             )}
             <View style={{ flex: 1 }}>
-              <NamespaceContext.Provider
-                value={month ? monthUtils.sheetForMonth(month) : ''}
+              <SheetNameProvider
+                name={month ? monthUtils.sheetForMonth(month) : ''}
               >
                 <CategoryAutocomplete
-                  focused={true}
-                  embedded={true}
+                  focused
+                  embedded
                   closeOnBlur={false}
+                  closeOnSelect={closeOnSelect}
+                  clearOnSelect={clearOnSelect}
                   showSplitOption={false}
-                  onClose={close}
+                  onClose={() => state.close()}
                   {...defaultAutocompleteProps}
-                  {...autocompleteProps}
+                  onSelect={onSelect}
+                  categoryGroups={categoryGroups}
+                  showHiddenCategories={showHiddenCategories}
+                  value={null}
                 />
-              </NamespaceContext.Provider>
+              </SheetNameProvider>
             </View>
+            {showNoneOption && (
+              <View style={{ flexShrink: 0, padding: 5 }}>
+                <Button
+                  variant="menu"
+                  onPress={() => {
+                    onSelect(null, '');
+                    state.close();
+                  }}
+                >
+                  <Trans>Uncategorized</Trans>
+                </Button>
+              </View>
+            )}
           </View>
         </>
       )}

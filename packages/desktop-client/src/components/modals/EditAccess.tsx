@@ -1,29 +1,31 @@
 import { useEffect, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { addNotification, popModal, signOut } from 'loot-core/client/actions';
-import { send } from 'loot-core/platform/client/fetch';
-import { getUserAccessErrors } from 'loot-core/shared/errors';
-import { type Handlers } from 'loot-core/types/handlers';
-import { type UserAccessEntity } from 'loot-core/types/models/userAccess';
+import { Button } from '@actual-app/components/button';
+import { Select } from '@actual-app/components/select';
+import { SpaceBetween } from '@actual-app/components/space-between';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
 
-import { useDispatch } from '../../redux';
-import { styles, theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Modal, ModalCloseButton, ModalHeader } from '../common/Modal';
-import { Select } from '../common/Select';
-import { Stack } from '../common/Stack';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { FormField, FormLabel } from '../forms';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { FormField, FormLabel } from '#components/forms';
+import { popModal } from '#modals/modalsSlice';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+import { addNotification } from '#notifications/notificationsSlice';
+import { useDispatch } from '#redux';
+import { signOut } from '#users/usersSlice';
+import { getUserAccessErrors } from '#util/error';
 
-type EditUserAccessProps = {
-  defaultUserAccess: UserAccessEntity;
-  onSave?: (userAccess: UserAccessEntity) => void;
-};
+type EditUserAccessProps = Extract<
+  ModalType,
+  { name: 'edit-access' }
+>['options'];
 
 export function EditUserAccess({
-  defaultUserAccess,
+  access: defaultUserAccess,
   onSave: originalOnSave,
 }: EditUserAccessProps) {
   const { t } = useTranslation();
@@ -34,8 +36,8 @@ export function EditUserAccess({
   const [availableUsers, setAvailableUsers] = useState<[string, string][]>([]);
 
   useEffect(() => {
-    send('access-get-available-users', defaultUserAccess.fileId).then(
-      (data: Awaited<ReturnType<Handlers['access-get-available-users']>>) => {
+    void send('access-get-available-users', defaultUserAccess.fileId).then(
+      data => {
         if ('error' in data) {
           setSetError(data.error);
         } else {
@@ -66,15 +68,17 @@ export function EditUserAccess({
       if (error === 'token-expired') {
         dispatch(
           addNotification({
-            type: 'error',
-            id: 'login-expired',
-            title: t('Login expired'),
-            sticky: true,
-            message: getUserAccessErrors(error),
-            button: {
-              title: t('Go to login'),
-              action: () => {
-                dispatch(signOut());
+            notification: {
+              type: 'error',
+              id: 'login-expired',
+              title: t('Login expired'),
+              sticky: true,
+              message: getUserAccessErrors(error),
+              button: {
+                title: t('Go to login'),
+                action: () => {
+                  void dispatch(signOut());
+                },
               },
             },
           }),
@@ -93,7 +97,7 @@ export function EditUserAccess({
             title={t('User Access')}
             rightContent={<ModalCloseButton onPress={close} />}
           />
-          <Stack direction="row" style={{ marginTop: 10 }}>
+          <SpaceBetween style={{ marginTop: 10 }}>
             <FormField style={{ flex: 1 }}>
               <FormLabel title={t('User')} htmlFor="user-field" />
               {availableUsers.length > 0 && (
@@ -103,7 +107,7 @@ export function EditUserAccess({
                     onChange={(newValue: string) => setUserId(newValue)}
                     value={userId}
                   />
-                  <label
+                  <Text
                     style={{
                       ...styles.verySmallText,
                       color: theme.pageTextLight,
@@ -111,7 +115,7 @@ export function EditUserAccess({
                     }}
                   >
                     <Trans>Select a user from the directory</Trans>
-                  </label>
+                  </Text>
                 </View>
               )}
               {availableUsers.length === 0 && (
@@ -126,21 +130,18 @@ export function EditUserAccess({
                 </Text>
               )}
             </FormField>
-          </Stack>
+          </SpaceBetween>
 
-          <Stack
-            direction="row"
-            justify="flex-end"
-            align="center"
-            style={{ marginTop: 20 }}
+          <SpaceBetween
+            gap={10}
+            style={{
+              marginTop: 20,
+              justifyContent: 'flex-end',
+            }}
           >
             {error && <Text style={{ color: theme.errorText }}>{error}</Text>}
-            <Button
-              variant="bare"
-              style={{ marginRight: 10 }}
-              onPress={() => dispatch(popModal())}
-            >
-              Cancel
+            <Button variant="bare" onPress={() => dispatch(popModal())}>
+              <Trans>Cancel</Trans>
             </Button>
             <Button
               variant="primary"
@@ -149,7 +150,7 @@ export function EditUserAccess({
             >
               {defaultUserAccess.userId ? t('Save') : t('Add')}
             </Button>
-          </Stack>
+          </SpaceBetween>
         </>
       )}
     </Modal>

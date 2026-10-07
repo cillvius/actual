@@ -1,17 +1,25 @@
 // @ts-strict-ignore
 import mitt from 'mitt';
 
-import { compileQuery, runCompiledQuery, schema, schemaConfig } from '../aql';
+import { logger } from '#platform/server/log';
+import {
+  aqlCompiledQuery,
+  compileQuery,
+  schema,
+  schemaConfig,
+} from '#server/aql';
+import type { BudgetType } from '#server/prefs';
+import type { QueryState } from '#shared/query';
 
 import { Graph } from './graph-data-structure';
-import { unresolveName, resolveName } from './util';
+import { resolveName, unresolveName } from './util';
 
 export type Node = {
   name: string;
   expr: string | number | boolean;
   value: string | number | boolean;
   sheet: unknown;
-  query?: string;
+  query?: QueryState;
   sql?: { sqlPieces: unknown; state: { dependencies: unknown[] } };
   dynamic?: boolean;
   _run?: unknown;
@@ -19,7 +27,10 @@ export type Node = {
 };
 
 export class Spreadsheet {
-  _meta;
+  _meta: {
+    createdMonths: Set<string>;
+    budgetType: BudgetType;
+  };
   cacheBarrier;
   computeQueue;
   dirtyCells;
@@ -43,6 +54,7 @@ export class Spreadsheet {
     this.events = mitt();
     this._meta = {
       createdMonths: new Set(),
+      budgetType: 'envelope',
     };
   }
 
@@ -98,7 +110,7 @@ export class Spreadsheet {
     try {
       func();
     } catch (e) {
-      console.log(e);
+      logger.log(e);
     }
     return this.endTransaction();
   }
@@ -132,7 +144,7 @@ export class Spreadsheet {
     // Begin running on the next tick so we guarantee that it doesn't finish
     // within the same tick. Since some computations are async, this makes it
     // consistent (otherwise it would only sometimes finish sync)
-    Promise.resolve().then(() => {
+    void Promise.resolve().then(() => {
       if (!this.running) {
         this.runComputations();
       }
@@ -158,12 +170,12 @@ export class Spreadsheet {
           result = node._run(...args);
 
           if (result instanceof Promise) {
-            console.warn(
+            logger.warn(
               `dynamic cell ${name} returned a promise! this is discouraged because errors are not handled properly`,
             );
           }
         } else if (node.sql) {
-          result = runCompiledQuery(
+          result = aqlCompiledQuery(
             node.query,
             node.sql.sqlPieces,
             node.sql.state,
@@ -173,7 +185,7 @@ export class Spreadsheet {
           continue;
         }
       } catch (e) {
-        console.log('Error while evaluating ' + name + ':', e);
+        logger.log('Error while evaluating ' + name + ':', e);
         // If an error happens, bail on the rest of the computations
         this.running = false;
         this.computeQueue = [];
@@ -190,7 +202,7 @@ export class Spreadsheet {
           },
           err => {
             // TODO: use captureException here
-            console.warn(`Failed running ${node.name}!`, err);
+            logger.warn(`Failed running ${node.name}!`, err);
             this.runComputations(idx + 1);
           },
         );
@@ -209,13 +221,17 @@ export class Spreadsheet {
       this.events.emit('change', { names: this.computeQueue });
 
       // Cache the updated cells
-      if (typeof this.saveCache === 'function') {
-        this.saveCache(this.computeQueue);
-      }
+      this.saveCachedCells(this.computeQueue);
       this.markCacheSafe();
 
       this.running = false;
       this.computeQueue = [];
+    }
+  }
+
+  saveCachedCells(names: string[]): void {
+    if (typeof this.saveCache === 'function') {
+      this.saveCache(names);
     }
   }
 
@@ -261,8 +277,9 @@ export class Spreadsheet {
 
     if (!this.running && this.computeQueue.length === 0) {
       func([]);
-      // The remove function does nothing
-      return () => {};
+      return () => {
+        // The remove function does nothing
+      };
     }
 
     const remove = this.addEventListener('change', (...args) => {
@@ -338,7 +355,7 @@ export class Spreadsheet {
     });
   }
 
-  createQuery(sheetName: string, cellName: string, query: string): void {
+  createQuery(sheetName: string, cellName: string, query: QueryState): void {
     const name = resolveName(sheetName, cellName);
     const node = this._getNode(name);
 

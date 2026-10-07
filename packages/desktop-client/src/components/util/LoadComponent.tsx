@@ -1,13 +1,13 @@
-import { type ComponentType, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { ComponentType } from 'react';
 
-import promiseRetry from 'promise-retry';
-
-import { LazyLoadFailedError } from 'loot-core/src/shared/errors';
-
-import { AnimatedLoading } from '../../icons/AnimatedLoading';
-import { theme, styles } from '../../style';
-import { Block } from '../common/Block';
-import { View } from '../common/View';
+import { Block } from '@actual-app/components/block';
+import { AnimatedLoading } from '@actual-app/components/icons/AnimatedLoading';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { LazyLoadFailedError } from '@actual-app/core/shared/errors';
+import { retry as promiseRetry } from '@actual-app/core/shared/retry';
 
 type ProplessComponent = ComponentType<Record<string, never>>;
 type LoadComponentProps<K extends string> = {

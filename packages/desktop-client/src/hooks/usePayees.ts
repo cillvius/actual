@@ -1,36 +1,14 @@
-import { useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
-import {
-  getCommonPayees,
-  getPayees,
-} from 'loot-core/client/queries/queriesSlice';
-
-import { useSelector, useDispatch } from '../redux';
-
-export function useCommonPayees() {
-  const dispatch = useDispatch();
-  const commonPayeesLoaded = useSelector(
-    state => state.queries.commonPayeesLoaded,
-  );
-
-  useEffect(() => {
-    if (!commonPayeesLoaded) {
-      dispatch(getCommonPayees());
-    }
-  }, []);
-
-  return useSelector(state => state.queries.commonPayees);
-}
+import { getPayeesById, payeeQueries } from '#payees';
 
 export function usePayees() {
-  const dispatch = useDispatch();
-  const payeesLoaded = useSelector(state => state.queries.payeesLoaded);
+  return useQuery(payeeQueries.list());
+}
 
-  useEffect(() => {
-    if (!payeesLoaded) {
-      dispatch(getPayees());
-    }
-  }, []);
-
-  return useSelector(state => state.queries.payees);
+export function usePayeesById() {
+  return useQuery({
+    ...payeeQueries.list(),
+    select: payees => getPayeesById(payees),
+  });
 }

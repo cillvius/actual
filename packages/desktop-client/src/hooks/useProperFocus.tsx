@@ -1,14 +1,12 @@
 // @ts-strict-ignore
 import React, {
   createContext,
-  useRef,
-  useLayoutEffect,
   useContext,
+  useLayoutEffect,
   useMemo,
-  type RefObject,
-  type ReactElement,
-  type MutableRefObject,
+  useRef,
 } from 'react';
+import type { ReactElement, RefObject } from 'react';
 
 function getFocusedKey(el: HTMLElement): string | null {
   let node: HTMLElement | ParentNode = el;
@@ -42,7 +40,7 @@ function focusElement(
 }
 
 type AvoidRefocusScrollContextValue = {
-  keyRef: MutableRefObject<string>;
+  keyRef: RefObject<string>;
   onKeyChange: (key: string) => void;
 };
 
@@ -76,7 +74,7 @@ export function AvoidRefocusScrollProvider({
 }
 
 export function useProperFocus(
-  ref: RefObject<HTMLElement>,
+  ref: RefObject<HTMLElement | null>,
   shouldFocus = false,
 ): void {
   const context = useContext(AvoidRefocusScrollContext);
@@ -98,5 +96,5 @@ export function useProperFocus(
     }
 
     prevShouldFocus.current = shouldFocus;
-  }, [shouldFocus]);
+  }, [context, ref, shouldFocus]);
 }

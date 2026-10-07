@@ -1,15 +1,38 @@
-// @ts-strict-ignore
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+import type { RuleEntity } from '@actual-app/core/types/models';
+import { vi } from 'vitest';
+
 import * as api from './index';
+
+declare global {
+  var IS_TESTING: boolean;
+  var currentMonth: string | null;
+}
+
+// In tests we run from source; loot-core's API fs uses __dirname (for the built dist/).
+// Mock the fs so path constants point at loot-core package root where migrations live.
+vi.mock(
+  '../loot-core/src/platform/server/fs/index.api',
+  async importOriginal => {
+    const actual = (await importOriginal()) as Record<string, unknown>;
+    const pathMod = await import('path');
+    const lootCoreRoot = pathMod.join(__dirname, '..', 'loot-core');
+    return {
+      ...actual,
+      migrationsPath: pathMod.join(lootCoreRoot, 'migrations'),
+      bundledDatabasePath: pathMod.join(lootCoreRoot, 'default-db.sqlite'),
+      demoBudgetPath: pathMod.join(lootCoreRoot, 'demo-budget'),
+    };
+  },
+);
 
 const budgetName = 'test-budget';
 
-beforeEach(async () => {
-  // we need real datetime if we are going to mix new timestamps with our mock data
-  global.restoreDateNow();
+global.IS_TESTING = true;
 
+beforeEach(async () => {
   const budgetPath = path.join(__dirname, '/mocks/budgets/', budgetName);
   await fs.rm(budgetPath, { force: true, recursive: true });
 
@@ -49,6 +72,92 @@ describe('API setup and teardown', () => {
     await expect(api.loadBudget(budgetName)).resolves.toBeUndefined();
 
     await expect(api.getBudgetMonths()).resolves.toMatchSnapshot();
+  });
+});
+
+describe('API budget import/export', () => {
+  const importedBudgetIds = new Set<string>();
+
+  beforeEach(async () => {
+    await api.loadBudget(budgetName);
+  });
+
+  afterEach(async () => {
+    // Close any budget loaded by an import before removing its files
+    await api.shutdown();
+
+    for (const id of importedBudgetIds) {
+      await fs.rm(path.join(__dirname, '/mocks/budgets/', id), {
+        force: true,
+        recursive: true,
+      });
+    }
+    importedBudgetIds.clear();
+  });
+
+  // apis: exportBudget, importBudget
+  test('exportBudget returns bytes that importBudget loads back', async () => {
+    const accountId = await api.createAccount({ name: 'round-trip' }, 0);
+    await api.addTransactions(accountId, [
+      { date: '2023-10-01', amount: 1234, notes: 'round-trip transaction' },
+    ]);
+
+    const data = await api.exportBudget();
+    expect(data).toBeInstanceOf(Uint8Array);
+    expect(data.length).toBeGreaterThan(0);
+
+    const { id } = await api.importBudget(data);
+    expect(id).toBeTruthy();
+    importedBudgetIds.add(id);
+
+    // The imported budget is now the loaded one; verify the data
+    // survived the round-trip
+    const accounts = await api.getAccounts();
+    expect(accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: accountId, name: 'round-trip' }),
+      ]),
+    );
+
+    const transactions = await api.getTransactions(
+      accountId,
+      '2023-10-01',
+      '2023-10-31',
+    );
+    expect(transactions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          amount: 1234,
+          notes: 'round-trip transaction',
+        }),
+      ]),
+    );
+  });
+
+  // apis: exportBudget, importBudget
+  test('importBudget imports from a file path', async () => {
+    const data = await api.exportBudget();
+    const filepath = path.join(__dirname, '/mocks/budgets/', 'export.zip');
+    await fs.writeFile(filepath, data);
+
+    try {
+      const { id } = await api.importBudget(filepath);
+      expect(id).toBeTruthy();
+      importedBudgetIds.add(id);
+    } finally {
+      await fs.rm(filepath, { force: true });
+    }
+  });
+
+  // apis: importBudget
+  test('importBudget rejects with an Error on failure', async () => {
+    await expect(api.importBudget('/does/not/exist.zip')).rejects.toThrow(
+      /^Error importing budget:/,
+    );
+
+    await expect(api.importBudget(new Uint8Array([1, 2, 3]))).rejects.toThrow(
+      /^Error importing budget:/,
+    );
   });
 });
 
@@ -283,7 +392,7 @@ describe('API CRUD operations', () => {
     expect(await api.getAccountBalance(accountId2)).toEqual(0);
 
     await api.updateAccount(accountId1, { offbudget: false });
-    await api.closeAccount(accountId1, accountId2, null);
+    await api.closeAccount(accountId1, accountId2);
     await api.deleteAccount(accountId2);
 
     // accounts successfully updated, and one of them deleted
@@ -354,6 +463,166 @@ describe('API CRUD operations', () => {
         }),
       ]),
     );
+  });
+
+  // apis: createTag, getTags, updateTag, deleteTag
+  test('Tags: successfully complete tag operations', async () => {
+    // Create tags
+    const tagId1 = await api.createTag({ tag: 'test-tag1', color: '#ff0000' });
+    const tagId2 = await api.createTag({
+      tag: 'test-tag2',
+      description: 'A test tag',
+    });
+
+    let tags = await api.getTags();
+    expect(tags).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: tagId1,
+          tag: 'test-tag1',
+          color: '#ff0000',
+        }),
+        expect.objectContaining({
+          id: tagId2,
+          tag: 'test-tag2',
+          description: 'A test tag',
+        }),
+      ]),
+    );
+
+    // Update tag
+    await api.updateTag(tagId1, { tag: 'updated-tag', color: '#00ff00' });
+    tags = await api.getTags();
+    expect(tags).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: tagId1,
+          tag: 'updated-tag',
+          color: '#00ff00',
+        }),
+      ]),
+    );
+
+    // Delete tag
+    await api.deleteTag(tagId2);
+    tags = await api.getTags();
+    expect(tags).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: tagId2 })]),
+    );
+  });
+
+  test('Tags: create tag with minimal fields', async () => {
+    const tagId = await api.createTag({ tag: 'minimal-tag' });
+    const tags = await api.getTags();
+    expect(tags).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: tagId,
+          tag: 'minimal-tag',
+          color: null,
+          description: null,
+        }),
+      ]),
+    );
+  });
+
+  test('Tags: update single field only', async () => {
+    const tagId = await api.createTag({ tag: 'original', color: '#ff0000' });
+
+    // Update only color, tag and description should remain unchanged
+    await api.updateTag(tagId, { color: '#00ff00' });
+
+    const tags = await api.getTags();
+    expect(tags).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: tagId,
+          tag: 'original',
+          color: '#00ff00',
+          description: null,
+        }),
+      ]),
+    );
+  });
+
+  test('Tags: handle null values correctly', async () => {
+    const tagId = await api.createTag({
+      tag: 'with-nulls',
+      color: null,
+      description: null,
+    });
+
+    const tags = await api.getTags();
+    expect(tags).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: tagId,
+          color: null,
+          description: null,
+        }),
+      ]),
+    );
+  });
+
+  test('Tags: clear optional field', async () => {
+    const tagId = await api.createTag({
+      tag: 'clearable',
+      color: '#ff0000',
+      description: 'will be cleared',
+    });
+
+    // Clear color by setting to null
+    await api.updateTag(tagId, { color: null });
+
+    let tags = await api.getTags();
+    expect(tags).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: tagId,
+          tag: 'clearable',
+          color: null,
+          description: 'will be cleared',
+        }),
+      ]),
+    );
+
+    // Clear description by setting to null
+    await api.updateTag(tagId, { description: null });
+
+    tags = await api.getTags();
+    expect(tags).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: tagId,
+          tag: 'clearable',
+          color: null,
+          description: null,
+        }),
+      ]),
+    );
+  });
+
+  // apis: getNote, updateNote
+  test('Notes: successfully get and update note', async () => {
+    const categories = await api.getCategories();
+    const categoryId = categories[0].id;
+
+    // No note exists initially
+    const initial = await api.getNote(categoryId);
+    expect(initial).toBeNull();
+
+    // Set a note
+    await api.updateNote(categoryId, 'Test note content');
+    const afterSet = await api.getNote(categoryId);
+    expect(afterSet).toEqual({ id: categoryId, note: 'Test note content' });
+
+    // Update the note
+    await api.updateNote(categoryId, 'Updated note content');
+    const afterUpdate = await api.getNote(categoryId);
+    expect(afterUpdate).toEqual({
+      id: categoryId,
+      note: 'Updated note content',
+    });
   });
 
   // apis: getRules, getPayeeRules, createRule, updateRule, deleteRule
@@ -506,7 +775,7 @@ describe('API CRUD operations', () => {
       ...rule,
       stage: 'post',
       conditionsOp: 'or',
-    };
+    } satisfies RuleEntity;
     expect(await api.updateRule(updatedRule)).toEqual(updatedRule);
 
     expect(await api.getRules()).toEqual(
@@ -569,8 +838,20 @@ describe('API CRUD operations', () => {
     const accountId = await api.createAccount({ name: 'test-account' }, 0);
 
     let newTransaction = [
-      { date: '2023-11-03', imported_id: '11', amount: 100, notes: 'notes' },
-      { date: '2023-11-03', imported_id: '12', amount: 100, notes: '' },
+      {
+        account: accountId,
+        date: '2023-11-03',
+        imported_id: '11',
+        amount: 100,
+        notes: 'notes',
+      },
+      {
+        account: accountId,
+        date: '2023-11-03',
+        imported_id: '12',
+        amount: 100,
+        notes: '',
+      },
     ];
 
     const addResult = await api.addTransactions(accountId, newTransaction, {
@@ -598,9 +879,27 @@ describe('API CRUD operations', () => {
     expect(transactions).toHaveLength(2);
 
     newTransaction = [
-      { date: '2023-12-03', imported_id: '11', amount: 100, notes: 'notes' },
-      { date: '2023-12-03', imported_id: '12', amount: 100, notes: 'notes' },
-      { date: '2023-12-03', imported_id: '22', amount: 200, notes: '' },
+      {
+        account: accountId,
+        date: '2023-12-03',
+        imported_id: '11',
+        amount: 100,
+        notes: 'notes',
+      },
+      {
+        account: accountId,
+        date: '2023-12-03',
+        imported_id: '12',
+        amount: 100,
+        notes: 'notes',
+      },
+      {
+        account: accountId,
+        date: '2023-12-03',
+        imported_id: '22',
+        amount: 200,
+        notes: '',
+      },
     ];
 
     const reconciled = await api.importTransactions(accountId, newTransaction);
@@ -653,5 +952,357 @@ describe('API CRUD operations', () => {
       ]),
     );
     expect(transactions).toHaveLength(1);
+  });
+
+  // apis: mergeTransactions
+  test('Transactions: successfully merge two transactions', async () => {
+    const accountId = await api.createAccount({ name: 'test-account' }, 0);
+
+    await api.addTransactions(accountId, [
+      { date: '2023-11-03', amount: 100, notes: 'notes' },
+      { date: '2023-11-03', amount: 100, imported_id: '1' },
+    ]);
+
+    const before = await api.getTransactions(
+      accountId,
+      '2023-11-01',
+      '2023-11-30',
+    );
+    expect(before).toHaveLength(2);
+
+    const keptId = await api.mergeTransactions([before[0].id, before[1].id]);
+
+    const after = await api.getTransactions(
+      accountId,
+      '2023-11-01',
+      '2023-11-30',
+    );
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ id: keptId, notes: 'notes' });
+  });
+
+  test('Transactions: import notes are preserved when importing', async () => {
+    const accountId = await api.createAccount({ name: 'test-account' }, 0);
+
+    // Test with notes
+    const transactionsWithNotes = [
+      {
+        date: '2023-11-03',
+        imported_id: '11',
+        amount: 100,
+        notes: 'test note',
+      },
+    ];
+
+    const addResultWithNotes = await api.addTransactions(
+      accountId,
+      transactionsWithNotes,
+      {
+        learnCategories: true,
+        runTransfers: true,
+      },
+    );
+    expect(addResultWithNotes).toBe('ok');
+
+    let transactions = await api.getTransactions(
+      accountId,
+      '2023-11-01',
+      '2023-11-30',
+    );
+    expect(transactions[0].notes).toBe('test note');
+
+    // Clear transactions
+    await api.deleteTransaction(transactions[0].id);
+
+    // Test without notes
+    const transactionsWithoutNotes = [
+      { date: '2023-11-03', imported_id: '11', amount: 100 },
+    ];
+
+    const addResultWithoutNotes = await api.addTransactions(
+      accountId,
+      transactionsWithoutNotes,
+      {
+        learnCategories: true,
+        runTransfers: true,
+      },
+    );
+    expect(addResultWithoutNotes).toBe('ok');
+
+    transactions = await api.getTransactions(
+      accountId,
+      '2023-11-01',
+      '2023-11-30',
+    );
+    expect(transactions[0].notes).toBeNull();
+  });
+
+  test('Transactions: reimportDeleted=false prevents reimporting deleted transactions', async () => {
+    const accountId = await api.createAccount({ name: 'test-account' }, 0);
+
+    // Import a transaction
+    const result1 = await api.importTransactions(accountId, [
+      {
+        date: '2023-11-03',
+        imported_id: 'reimport-test-1',
+        amount: 100,
+        account: accountId,
+      },
+    ]);
+    expect(result1.added).toHaveLength(1);
+
+    // Delete the transaction
+    await api.deleteTransaction(result1.added[0]);
+
+    // Reimport the same transaction with reimportDeleted=false
+    const result2 = await api.importTransactions(
+      accountId,
+      [
+        {
+          date: '2023-11-03',
+          imported_id: 'reimport-test-1',
+          amount: 100,
+          account: accountId,
+        },
+      ],
+      { reimportDeleted: false },
+    );
+
+    // Should match the deleted transaction and not create a new one
+    expect(result2.added).toHaveLength(0);
+    expect(result2.updated).toHaveLength(0);
+  });
+
+  test('Transactions: reimportDeleted=true reimports deleted transactions', async () => {
+    const accountId = await api.createAccount({ name: 'test-account' }, 0);
+
+    // Import a transaction
+    const result1 = await api.importTransactions(accountId, [
+      {
+        date: '2023-11-03',
+        imported_id: 'reimport-test-2',
+        amount: 200,
+        account: accountId,
+      },
+    ]);
+    expect(result1.added).toHaveLength(1);
+
+    // Delete the transaction
+    await api.deleteTransaction(result1.added[0]);
+
+    // Reimport the same transaction relying on reimportDeleted=true default
+    const result2 = await api.importTransactions(accountId, [
+      {
+        date: '2023-11-03',
+        imported_id: 'reimport-test-2',
+        amount: 200,
+        account: accountId,
+      },
+    ]);
+
+    // Should create a new transaction since deleted ones are ignored
+    expect(result2.added).toHaveLength(1);
+  });
+});
+
+//apis: createSchedule, getSchedules, updateSchedule, deleteSchedule
+test('Schedules: successfully complete schedules operations', async () => {
+  await api.loadBudget(budgetName);
+  //test a schedule with a recuring configuration
+  const ScheduleId1 = await api.createSchedule({
+    name: 'test-schedule 1',
+    posts_transaction: true,
+    //    amount: -5000,
+    amountOp: 'is',
+    date: {
+      frequency: 'monthly',
+      interval: 1,
+      start: '2025-06-13',
+      patterns: [],
+      skipWeekend: false,
+      weekendSolveMode: 'after',
+      endMode: 'never',
+    },
+  });
+  //test the creation of non recurring schedule
+  const ScheduleId2 = await api.createSchedule({
+    name: 'test-schedule 2',
+    posts_transaction: false,
+    amount: 4000,
+    amountOp: 'is',
+    date: '2025-06-13',
+  });
+  let schedules = await api.getSchedules();
+
+  // Schedules successfully created
+  expect(schedules).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        name: 'test-schedule 1',
+        posts_transaction: true,
+        //       amount: -5000,
+        amountOp: 'is',
+        date: {
+          frequency: 'monthly',
+          interval: 1,
+          start: '2025-06-13',
+          patterns: [],
+          skipWeekend: false,
+          weekendSolveMode: 'after',
+          endMode: 'never',
+        },
+      }),
+      expect.objectContaining({
+        name: 'test-schedule 2',
+        posts_transaction: false,
+        amount: 4000,
+        amountOp: 'is',
+        date: '2025-06-13',
+      }),
+    ]),
+  );
+  //check getIDByName works on schedules
+  expect(await api.getIDByName('schedules', 'test-schedule 1')).toEqual(
+    ScheduleId1,
+  );
+  expect(await api.getIDByName('schedules', 'test-schedule 2')).toEqual(
+    ScheduleId2,
+  );
+
+  //check getIDByName works on accounts
+  const schedAccountId1 = await api.createAccount(
+    { name: 'sched-test-account1', offbudget: true },
+    1000,
+  );
+
+  expect(await api.getIDByName('accounts', 'sched-test-account1')).toEqual(
+    schedAccountId1,
+  );
+
+  //check getIDByName works on payees
+  const schedPayeeId1 = await api.createPayee({ name: 'sched-test-payee1' });
+
+  expect(await api.getIDByName('payees', 'sched-test-payee1')).toEqual(
+    schedPayeeId1,
+  );
+  await api.updateSchedule(ScheduleId1, {
+    amount: -10000,
+    account: schedAccountId1,
+  });
+  await api.deleteSchedule(ScheduleId2);
+
+  // schedules successfully updated, and one of them deleted
+  await api.updateSchedule(ScheduleId1, {
+    amount: -10000,
+    account: schedAccountId1,
+    payee: schedPayeeId1,
+  });
+  await api.deleteSchedule(ScheduleId2);
+
+  schedules = await api.getSchedules();
+  expect(schedules).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: ScheduleId1,
+        posts_transaction: true,
+        amount: -10000,
+        account: schedAccountId1,
+        payee: schedPayeeId1,
+        amountOp: 'is',
+        date: {
+          frequency: 'monthly',
+          interval: 1,
+          start: '2025-06-13',
+          patterns: [],
+          skipWeekend: false,
+          weekendSolveMode: 'after',
+          endMode: 'never',
+        },
+      }),
+      expect.not.objectContaining({ id: ScheduleId2 }),
+    ]),
+  );
+});
+
+// apis: getPreferences
+test('Preferences: successfully read synced preferences', async () => {
+  await api.loadBudget(budgetName);
+
+  await api.internal?.send('preferences/save', {
+    id: 'numberFormat',
+    value: '1.234,56',
+  });
+  await api.internal?.send('preferences/save', {
+    id: 'hideFraction',
+    value: 'true',
+  });
+
+  const preferences = await api.getPreferences();
+  expect(preferences).toMatchObject({
+    numberFormat: '1.234,56',
+    hideFraction: 'true',
+  });
+});
+
+describe('API preferences: setPreference', () => {
+  beforeEach(async () => {
+    await api.loadBudget(budgetName);
+  });
+
+  // apis: setPreference
+  test('successfully sets a single preference', async () => {
+    await api.setPreference('numberFormat', '1,234.5');
+
+    const preferences = await api.getPreferences();
+    expect(preferences.numberFormat).toBe('1,234.5');
+  });
+
+  // apis: setPreference
+  test('can set multiple preferences', async () => {
+    await api.setPreference('numberFormat', '1,234.5');
+    await api.setPreference('hideFraction', 'true');
+    await api.setPreference('defaultCurrencyCode', 'USD');
+
+    const preferences = await api.getPreferences();
+    expect(preferences).toMatchObject({
+      numberFormat: '1,234.5',
+      hideFraction: 'true',
+      defaultCurrencyCode: 'USD',
+    });
+  });
+
+  // apis: setPreference
+  test('can set feature flag preferences', async () => {
+    await api.setPreference('flags.newSidebarUI', 'true');
+
+    const preferences = await api.getPreferences();
+    expect(preferences['flags.newSidebarUI']).toBe('true');
+  });
+
+  // apis: setPreference
+  test('can set account-specific preferences', async () => {
+    const accountId = 'test-account-123';
+    await api.setPreference(
+      `show-account-${accountId}-net-worth-chart`,
+      'false',
+    );
+
+    const preferences = await api.getPreferences();
+    expect(preferences[`show-account-${accountId}-net-worth-chart`]).toBe(
+      'false',
+    );
+  });
+
+  // apis: setPreference
+  test('can set CSV import preferences', async () => {
+    await api.setPreference(
+      `csv-mappings-${budgetName}`,
+      'col1:name,col2:amount',
+    );
+
+    const preferences = await api.getPreferences();
+    expect(preferences[`csv-mappings-${budgetName}`]).toBe(
+      'col1:name,col2:amount',
+    );
   });
 });

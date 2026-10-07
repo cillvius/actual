@@ -1,5 +1,5 @@
 // @ts-strict-ignore
-import { SchemaConfig } from '../compiler';
+import type { SchemaConfig } from '#server/aql/compiler';
 
 function f(type: string, opts?: Record<string, unknown>) {
   return { type, ...opts };
@@ -53,6 +53,7 @@ export const schema = {
     reconciled: f('boolean', { default: false }),
     tombstone: f('boolean'),
     schedule: f('id', { ref: 'schedules' }),
+    raw_synced_data: f('string'),
     // subtransactions is a special field added if the table has the
     // `splits: grouped` option
   },
@@ -62,6 +63,7 @@ export const schema = {
     transfer_acct: f('id', { ref: 'accounts' }),
     tombstone: f('boolean'),
     favorite: f('boolean'),
+    learn_categories: f('boolean'),
   },
   accounts: {
     id: f('id'),
@@ -73,6 +75,16 @@ export const schema = {
     account_id: f('string'),
     official_name: f('string'),
     account_sync_source: f('string'),
+    last_reconciled: f('string'),
+    last_sync: f('string'),
+    bank_sync_status: f('string'),
+    account_group_id: f('id', { ref: 'account_groups' }),
+  },
+  account_groups: {
+    id: f('id'),
+    name: f('string'),
+    sort_order: f('float'),
+    tombstone: f('boolean'),
   },
   categories: {
     id: f('id'),
@@ -80,6 +92,9 @@ export const schema = {
     is_income: f('boolean'),
     hidden: f('boolean'),
     group: f('id', { ref: 'category_groups' }),
+    goal_def: f('string'),
+    cleanup_def: f('string'),
+    template_settings: f('json', { default: { source: 'notes' } }),
     sort_order: f('float'),
     tombstone: f('boolean'),
   },
@@ -91,6 +106,11 @@ export const schema = {
     sort_order: f('float'),
     tombstone: f('boolean'),
   },
+  cleanup_groups: {
+    id: f('id'),
+    name: f('string'),
+    tombstone: f('boolean'),
+  },
   schedules: {
     id: f('id'),
     name: f('string'),
@@ -98,7 +118,9 @@ export const schema = {
     next_date: f('date'),
     completed: f('boolean'),
     posts_transaction: f('boolean'),
+    custom_upcoming_length: f('string'),
     tombstone: f('boolean'),
+    sort_order: f('float'),
 
     // These are special fields that are actually pulled from the
     // underlying rule
@@ -109,6 +131,7 @@ export const schema = {
     _date: f('json/fallback'),
     _conditions: f('json'),
     _actions: f('json'),
+    _has_splits: f('boolean'),
   },
   rules: {
     id: f('id'),
@@ -148,6 +171,8 @@ export const schema = {
     show_offbudget: f('integer', { default: 0 }),
     show_hidden: f('integer', { default: 0 }),
     show_uncategorized: f('integer', { default: 0 }),
+    trim_intervals: f('integer', { default: 0 }),
+    show_trend_lines: f('integer', { default: 0 }),
     include_current: f('integer', { default: 0 }),
     graph_type: f('string', { default: 'BarGraph' }),
     conditions: f('json'),
@@ -175,14 +200,28 @@ export const schema = {
     goal: f('integer'),
     long_goal: f('integer'),
   },
+  dashboard_pages: {
+    id: f('id'),
+    name: f('string'),
+    tombstone: f('boolean'),
+  },
   dashboard: {
     id: f('id'),
+    dashboard_page_id: f('id', { ref: 'dashboard_pages' }),
     type: f('string', { required: true }),
     width: f('integer', { required: true }),
     height: f('integer', { required: true }),
     x: f('integer', { required: true }),
     y: f('integer', { required: true }),
     meta: f('json'),
+    tombstone: f('boolean'),
+  },
+  payee_locations: {
+    id: f('id'),
+    payee_id: f('id', { ref: 'payees', required: true }),
+    latitude: f('float', { required: true }),
+    longitude: f('float', { required: true }),
+    created_at: f('integer', { required: true }),
     tombstone: f('boolean'),
   },
 };
@@ -244,6 +283,10 @@ export const schemaConfig: SchemaConfig = {
             { sort_order: 'desc' },
             'id',
           ];
+        case 'category_groups':
+          return ['is_income', 'sort_order', 'id'];
+        case 'categories':
+          return ['sort_order', 'id'];
         case 'payees':
           return [
             { $condition: { transfer_acct: null }, $dir: 'desc' },
@@ -251,6 +294,8 @@ export const schemaConfig: SchemaConfig = {
           ];
         case 'accounts':
           return ['sort_order', 'name'];
+        case 'account_groups':
+          return ['sort_order', 'id'];
         case 'schedules':
           return [{ $condition: { completed: true } }, 'next_date'];
         default:
@@ -295,7 +340,6 @@ export const schemaConfig: SchemaConfig = {
 
     schedules: {
       v_schedules: internalFields => {
-        /* eslint-disable rulesdir/typography */
         const fields = internalFields({
           next_date: `
             CASE
@@ -310,6 +354,11 @@ export const schemaConfig: SchemaConfig = {
           _date: `json_extract(_rules.conditions, _paths.date || '.value')`,
           _conditions: '_rules.conditions',
           _actions: '_rules.actions',
+          _has_splits: `EXISTS (
+            SELECT 1
+            FROM json_each(_rules.actions) action
+            WHERE json_extract(action.value, '$.options.splitIndex') > 0
+          )`,
         });
 
         return `
@@ -319,7 +368,6 @@ export const schemaConfig: SchemaConfig = {
         LEFT JOIN rules _rules ON _rules.id = _.rule
         LEFT JOIN payee_mapping pm ON pm.id = json_extract(_rules.conditions, _paths.payee || '.value')
         `;
-        /* eslint-enable rulesdir/typography */
       },
     },
 

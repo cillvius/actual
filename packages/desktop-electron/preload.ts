@@ -1,6 +1,8 @@
-import { ipcRenderer, contextBridge, IpcRenderer } from 'electron';
+// @ts-strict-ignore
+import { contextBridge, ipcRenderer } from 'electron';
+import type { IpcRenderer } from 'electron';
 
-import {
+import type {
   GetBootstrapDataPayload,
   OpenFileDialogPayload,
   SaveFileDialogPayload,
@@ -29,14 +31,20 @@ contextBridge.exposeInMainWorld('Actual', {
     });
   },
 
+  startSyncServer: () => ipcRenderer.invoke('start-sync-server'),
+
+  stopSyncServer: () => ipcRenderer.invoke('stop-sync-server'),
+
+  isSyncServerRunning: () => ipcRenderer.invoke('is-sync-server-running'),
+
   startOAuthServer: () => ipcRenderer.invoke('start-oauth-server'),
 
   relaunch: () => {
-    ipcRenderer.invoke('relaunch');
+    void ipcRenderer.invoke('relaunch');
   },
 
   restartElectronServer: () => {
-    ipcRenderer.invoke('restart-server');
+    void ipcRenderer.invoke('restart-server');
   },
 
   openFileDialog: (opts: OpenFileDialogPayload) => {
@@ -56,20 +64,23 @@ contextBridge.exposeInMainWorld('Actual', {
   },
 
   openURLInBrowser: (url: string) => {
-    ipcRenderer.invoke('open-external-url', url);
+    void ipcRenderer.invoke('open-external-url', url);
+  },
+
+  openInFileManager: (filepath: string) => {
+    void ipcRenderer.invoke('open-in-file-manager', filepath);
   },
 
   onEventFromMain: (type: string, handler: (...args: unknown[]) => void) => {
     ipcRenderer.on(type, handler);
   },
 
-  updateAppMenu: (budgetId?: string) => {
-    ipcRenderer.send('update-menu', budgetId);
-  },
-
   // No auto-updates in the desktop app
   isUpdateReadyForDownload: () => false,
-  waitForUpdateReadyForDownload: () => new Promise<void>(() => {}),
+  waitForUpdateReadyForDownload: () =>
+    new Promise<void>(() => {
+      // This is used in browser environment; do nothing in electron
+    }),
 
   getServerSocket: async () => {
     return null;
@@ -88,6 +99,10 @@ contextBridge.exposeInMainWorld('Actual', {
       currentBudgetDirectory,
       newDirectory,
     );
+  },
+
+  setDocumentDir: (directory: string) => {
+    return ipcRenderer.invoke('set-document-dir', directory);
   },
 
   reload: async () => {

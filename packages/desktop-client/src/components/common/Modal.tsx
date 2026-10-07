@@ -1,37 +1,38 @@
-import React, {
-  useEffect,
-  useRef,
-  useLayoutEffect,
-  useState,
-  type ReactNode,
-  type ComponentPropsWithoutRef,
-  type ComponentPropsWithRef,
-  type CSSProperties,
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type {
+  ComponentPropsWithoutRef,
+  ComponentPropsWithRef,
+  CSSProperties,
+  ReactNode,
 } from 'react';
 import {
-  ModalOverlay as ReactAriaModalOverlay,
-  Modal as ReactAriaModal,
   Dialog,
+  Modal as ReactAriaModal,
+  ModalOverlay as ReactAriaModalOverlay,
 } from 'react-aria-components';
+import { ErrorBoundary } from 'react-error-boundary';
 import { useHotkeysContext } from 'react-hotkeys-hook';
 import { useTranslation } from 'react-i18next';
 
+import { Button } from '@actual-app/components/button';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { AnimatedLoading } from '@actual-app/components/icons/AnimatedLoading';
+import { SvgLogo } from '@actual-app/components/icons/logo';
+import { SvgDelete } from '@actual-app/components/icons/v0';
+import { Input } from '@actual-app/components/input';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { TextOneLine } from '@actual-app/components/text-one-line';
+import { theme } from '@actual-app/components/theme';
+import { tokens } from '@actual-app/components/tokens';
+import { View } from '@actual-app/components/view';
 import { css } from '@emotion/css';
 import { AutoTextSize } from 'auto-text-size';
 
-import { useModalState } from '../../hooks/useModalState';
-import { AnimatedLoading } from '../../icons/AnimatedLoading';
-import { SvgLogo } from '../../icons/logo';
-import { SvgDelete } from '../../icons/v0';
-import { styles, theme } from '../../style';
-import { tokens } from '../../tokens';
-import { useResponsive } from '../responsive/ResponsiveProvider';
+import { FeatureErrorFallback } from '#components/FeatureErrorFallback';
+import { useModalState } from '#hooks/useModalState';
 
-import { Button } from './Button2';
-import { Input } from './Input';
-import { Text } from './Text';
-import { TextOneLine } from './TextOneLine';
-import { View } from './View';
+export const MODAL_Z_INDEX = 3000;
 
 type ModalProps = ComponentPropsWithRef<typeof ReactAriaModal> & {
   name: string;
@@ -39,6 +40,9 @@ type ModalProps = ComponentPropsWithRef<typeof ReactAriaModal> & {
   noAnimation?: boolean;
   style?: CSSProperties;
   onClose?: () => void;
+  wrapperProps?: {
+    style?: CSSProperties;
+  };
   containerProps?: {
     style?: CSSProperties;
   };
@@ -51,6 +55,7 @@ export const Modal = ({
   style,
   children,
   onClose,
+  wrapperProps,
   containerProps,
   ...props
 }: ModalProps) => {
@@ -72,97 +77,108 @@ export const Modal = ({
   };
 
   return (
-    <ReactAriaModalOverlay
-      data-testid={`${name}-modal`}
-      isDismissable
-      defaultOpen={true}
-      onOpenChange={isOpen => !isOpen && handleOnClose?.()}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 3000,
-        overflowY: 'auto',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: 14,
-        willChange: 'transform',
-        // on mobile, we disable the blurred background for performance reasons
-        ...(isNarrowWidth
-          ? {
-              backgroundColor: 'rgba(0, 0, 0, 0.4)',
-            }
-          : {
-              backdropFilter: 'blur(1px) brightness(0.9)',
-            }),
-        ...style,
-      }}
-      {...props}
-    >
-      <ReactAriaModal>
-        {modalProps => (
-          <Dialog
-            aria-label={t('Modal dialog')}
-            className={css(styles.lightScrollbar)}
-            style={{
-              outline: 'none', // remove focus outline
-            }}
-          >
-            <ModalContentContainer
-              noAnimation={noAnimation}
-              isActive={isActive(name)}
-              {...containerProps}
-              style={{
-                flex: 1,
-                padding: 10,
-                willChange: 'opacity, transform',
-                maxWidth: '90vw',
-                minWidth: '90vw',
-                maxHeight: '90vh',
-                minHeight: 0,
-                borderRadius: 6,
-                //border: '1px solid ' + theme.modalBorder,
-                color: theme.pageText,
-                backgroundColor: theme.modalBackground,
-                opacity: isHidden ? 0 : 1,
-                [`@media (min-width: ${tokens.breakpoint_small})`]: {
-                  minWidth: tokens.breakpoint_small,
-                },
-                overflowY: 'auto',
-                ...styles.shadowLarge,
-                ...containerProps?.style,
-              }}
-            >
-              <View style={{ paddingTop: 0, flex: 1, flexShrink: 0 }}>
-                {typeof children === 'function'
-                  ? children(modalProps)
-                  : children}
-              </View>
-              {isLoading && (
-                <View
+    <ErrorBoundary FallbackComponent={FeatureErrorFallback}>
+      <ReactAriaModalOverlay
+        data-testid={`${name}-modal`}
+        isDismissable
+        defaultOpen
+        onOpenChange={isOpen => !isOpen && handleOnClose?.()}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: MODAL_Z_INDEX,
+          fontSize: 14,
+          // on mobile, we disable the blurred background for performance reasons
+          ...(isNarrowWidth
+            ? {
+                backgroundColor: 'rgba(0, 0, 0, 0.4)',
+              }
+            : {
+                backdropFilter: 'blur(1px) brightness(0.9)',
+              }),
+          ...style,
+        }}
+        {...props}
+      >
+        {/* A container for positioning the modal relative to the visual viewport */}
+        <View
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            height: 'var(--visual-viewport-height)',
+            overflowY: 'auto',
+            ...wrapperProps?.style,
+          }}
+        >
+          <ReactAriaModal>
+            {modalProps => (
+              <Dialog
+                aria-label={t('Modal dialog')}
+                className={css(styles.lightScrollbar)}
+                style={{
+                  outline: 'none', // remove focus outline
+                }}
+              >
+                <ModalContentContainer
+                  noAnimation={noAnimation}
+                  isActive={isActive(name)}
+                  {...containerProps}
                   style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    backgroundColor: theme.pageBackground,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    zIndex: 1000,
+                    flex: 1,
+                    padding: 10,
+                    willChange: 'opacity, transform',
+                    maxWidth: '90vw',
+                    minWidth: '90vw',
+                    maxHeight: 'calc(var(--visual-viewport-height) * 0.9)',
+                    minHeight: 0,
+                    borderRadius: 6,
+                    //border: '1px solid ' + theme.modalBorder,
+                    color: theme.pageText,
+                    backgroundColor: theme.modalBackground,
+                    opacity: isHidden ? 0 : 1,
+                    [`@media (min-width: ${tokens.breakpoint_small})`]: {
+                      minWidth: tokens.breakpoint_small,
+                    },
+                    overflowY: 'auto',
+                    ...styles.shadowLarge,
+                    ...containerProps?.style,
                   }}
                 >
-                  <AnimatedLoading
-                    style={{ width: 20, height: 20 }}
-                    color={theme.pageText}
-                  />
-                </View>
-              )}
-            </ModalContentContainer>
-          </Dialog>
-        )}
-      </ReactAriaModal>
-    </ReactAriaModalOverlay>
+                  <View style={{ paddingTop: 0, flex: 1, flexShrink: 0 }}>
+                    <ErrorBoundary FallbackComponent={FeatureErrorFallback}>
+                      {typeof children === 'function'
+                        ? children(modalProps)
+                        : children}
+                    </ErrorBoundary>
+                  </View>
+                  {isLoading && (
+                    <View
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        backgroundColor: theme.pageBackground,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                      }}
+                    >
+                      <AnimatedLoading
+                        style={{ width: 20, height: 20 }}
+                        color={theme.pageText}
+                      />
+                    </View>
+                  )}
+                </ModalContentContainer>
+              </Dialog>
+            )}
+          </ReactAriaModal>
+        </View>
+      </ReactAriaModalOverlay>
+    </ErrorBoundary>
   );
 };
 
@@ -194,7 +210,8 @@ const ModalContentContainer = ({
       }
 
       if (isActive) {
-        contentRef.current.style.transform = 'translateY(0px) scale(1)';
+        contentRef.current.style.transform = 'none';
+        contentRef.current.style.willChange = 'auto';
         contentRef.current.style.pointerEvents = 'auto';
       } else {
         contentRef.current.style.transform = `translateY(-40px) scale(.95) rotate(${rotateFactor.current}deg)`;
@@ -303,13 +320,16 @@ export function ModalHeader({
 }: ModalHeaderProps) {
   const { t } = useTranslation();
   return (
-    <View
-      role="heading"
+    <h1
       style={{
         justifyContent: 'center',
         alignItems: 'center',
         position: 'relative',
         height: 60,
+        flex: 'none',
+        display: 'flex',
+        margin: 0,
+        padding: 0,
       }}
     >
       <View
@@ -357,7 +377,7 @@ export function ModalHeader({
           {rightContent}
         </View>
       )}
-    </View>
+    </h1>
   );
 }
 
@@ -405,21 +425,18 @@ export function ModalTitle({
 
   return isEditing ? (
     <Input
-      inputRef={inputRef}
+      ref={inputRef}
       style={{
         fontSize: 25,
         fontWeight: 700,
         textAlign: 'center',
         ...style,
       }}
-      focused={isEditing}
       defaultValue={title}
       onUpdate={_onTitleUpdate}
-      onKeyDown={e => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          _onTitleUpdate?.(e.currentTarget.value);
-        }
+      onEnter={(value, e) => {
+        e.preventDefault();
+        _onTitleUpdate?.(value);
       }}
     />
   ) : (

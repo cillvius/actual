@@ -1,34 +1,41 @@
 // @ts-strict-ignore
-import AdmZip from 'adm-zip';
 import { v4 as uuidv4 } from 'uuid';
 
-import * as asyncStorage from '../platform/server/asyncStorage';
-import { fetch } from '../platform/server/fetch';
-import * as fs from '../platform/server/fs';
-import * as sqlite from '../platform/server/sqlite';
-import * as monthUtils from '../shared/months';
+import * as asyncStorage from '#platform/server/asyncStorage';
+import { fetch } from '#platform/server/fetch';
+import * as fs from '#platform/server/fs';
+import { logger } from '#platform/server/log';
+import * as memory from '#platform/server/memory';
+import * as sqlite from '#platform/server/sqlite';
+import * as monthUtils from '#shared/months';
 
 import * as encryption from './encryption';
 import {
-  HTTPError,
-  PostError,
   FileDownloadError,
   FileUploadError,
+  HTTPError,
+  PostError,
 } from './errors';
 import { runMutator } from './mutators';
-import { post } from './post';
+import { getServerErrorReason, post } from './post';
 import * as prefs from './prefs';
 import { getServer } from './server-config';
+import {
+  exceedsSafeUnzipLimits,
+  safeUnzip,
+  safeZip,
+  UnsafeZipError,
+} from './util/zip';
 
 const UPLOAD_FREQUENCY_IN_DAYS = 7;
 
-export interface UsersWithAccess {
+export type UsersWithAccess = {
   userId: string;
   userName: string;
   displayName: string;
   owner: boolean;
-}
-export interface RemoteFile {
+};
+export type RemoteFile = {
   deleted: boolean;
   fileId: string;
   groupId: string;
@@ -37,28 +44,27 @@ export interface RemoteFile {
   hasKey: boolean;
   owner: string;
   usersWithAccess: UsersWithAccess[];
-}
+};
 
 async function checkHTTPStatus(res) {
-  if (res.status !== 200) {
-    if (res.status === 403) {
-      try {
-        const text = await res.text();
-        const data = JSON.parse(text)?.data;
-        if (data?.reason === 'token-expired') {
-          await asyncStorage.removeItem('user-token');
-          throw new HTTPError(403, 'token-expired');
-        }
-      } catch (e) {
-        if (e instanceof HTTPError) throw e;
-      }
-    }
-    return res.text().then(str => {
-      throw new HTTPError(res.status, str);
-    });
-  } else {
+  if (res.status === 200) {
     return res;
   }
+
+  const text = await res.text();
+  if (res.status === 401 || res.status === 403) {
+    try {
+      const body = JSON.parse(text);
+      const error = res.status === 403 ? body.data : body;
+      if (getServerErrorReason(error) === 'token-expired') {
+        await asyncStorage.removeItem('user-token');
+      }
+    } catch {
+      // Preserve the original HTTP error when the response is not JSON.
+    }
+  }
+
+  throw new HTTPError(res.status, text);
 }
 
 async function fetchJSON(...args: Parameters<typeof fetch>) {
@@ -82,14 +88,14 @@ export async function checkKey(): Promise<{
       fileId: cloudFileId,
     });
   } catch (e) {
-    console.log(e);
+    logger.log(e);
     return { valid: false, error: { reason: 'network' } };
   }
 
   return {
     valid:
       // This == comparison is important, they could be null or undefined
-      // eslint-disable-next-line eqeqeq
+      // oxlint-disable-next-line eslint/eqeqeq
       res.id == encryptKeyId &&
       (encryptKeyId == null || encryption.hasKey(encryptKeyId)),
   };
@@ -144,14 +150,11 @@ export async function exportBuffer() {
 
   const budgetDir = fs.getBudgetDir(id);
 
-  // create zip
-  const zipped = new AdmZip();
-
   // We run this in a mutator even though its not mutating anything
   // because we are reading the sqlite file from disk. We want to make
   // sure that we get a valid snapshot of it so we want this to be
   // serialized with all other mutations.
-  await runMutator(async () => {
+  const { zipped, entries } = await runMutator(async () => {
     const rawDbContent = await fs.readFile(
       fs.join(budgetDir, 'db.sqlite'),
       'binary',
@@ -182,35 +185,71 @@ export async function exportBuffer() {
     meta.resetClock = true;
     const metaContent = Buffer.from(JSON.stringify(meta), 'utf8');
 
-    zipped.addFile('db.sqlite', Buffer.from(dbContent));
-    zipped.addFile('metadata.json', metaContent);
+    const entries = {
+      'db.sqlite': Buffer.from(dbContent),
+      'metadata.json': metaContent,
+    };
+
+    return { zipped: safeZip(entries), entries };
   });
 
-  return Buffer.from(zipped.toBuffer());
+  const warnings: string[] = [];
+  if (exceedsSafeUnzipLimits(zipped, entries)) {
+    warnings.push('exceeds-import-size-limit');
+  }
+
+  const availableMemory = memory.getAvailableMemory();
+  if (
+    availableMemory != null &&
+    entries['db.sqlite'].length > availableMemory
+  ) {
+    warnings.push('may-exceed-available-memory');
+  }
+
+  return { data: Buffer.from(zipped), warnings };
 }
 
 export async function importBuffer(fileData, buffer) {
-  let zipped, entries;
+  let entries;
   try {
-    zipped = new AdmZip(buffer);
-    entries = zipped.getEntries();
-  } catch (err) {
+    entries = safeUnzip(buffer);
+  } catch (e) {
+    if (e instanceof UnsafeZipError) {
+      throw FileDownloadError('zip-too-large', e.meta);
+    }
     throw FileDownloadError('not-zip-file');
   }
-  const dbEntry = entries.find(e => e.entryName.includes('db.sqlite'));
-  const metaEntry = entries.find(e => e.entryName.includes('metadata.json'));
+  const entryNames = Object.keys(entries);
+  const dbDirs = entryNames
+    .filter(name => name === 'db.sqlite' || name.endsWith('/db.sqlite'))
+    .map(name => name.slice(0, -'db.sqlite'.length));
+  const metaDirs = entryNames
+    .filter(name => name === 'metadata.json' || name.endsWith('/metadata.json'))
+    .map(name => name.slice(0, -'metadata.json'.length));
 
-  if (!dbEntry || !metaEntry) {
+  // Both files must come from the same directory: prefer the archive root,
+  // otherwise there must be exactly one directory containing both.
+  const sharedDirs = dbDirs.filter(dir => metaDirs.includes(dir));
+  const dir = sharedDirs.includes('')
+    ? ''
+    : sharedDirs.length === 1
+      ? sharedDirs[0]
+      : null;
+
+  if (dir == null) {
     throw FileDownloadError('invalid-zip-file');
   }
 
-  const dbContent = zipped.readFile(dbEntry);
-  const metaContent = zipped.readFile(metaEntry);
+  const entryName = dir + 'db.sqlite';
+  const metaEntryName = dir + 'metadata.json';
+
+  const dbContent = Buffer.from(entries[entryName]);
+  const metaContent = Buffer.from(entries[metaEntryName]);
 
   let meta;
   try {
     meta = JSON.parse(metaContent.toString('utf8'));
-  } catch (err) {
+  } catch {
     throw FileDownloadError('invalid-meta-file');
   }
 
@@ -253,10 +292,11 @@ export async function upload() {
     throw FileUploadError('unauthorized');
   }
 
-  const zipContent = await exportBuffer();
-  if (zipContent == null) {
+  const exported = await exportBuffer();
+  if (exported == null) {
     return;
   }
+  const zipContent = exported.data;
 
   const {
     id,
@@ -294,21 +334,23 @@ export async function upload() {
     res = await fetchJSON(getServer().SYNC_SERVER + '/upload-user-file', {
       method: 'POST',
       headers: {
-        'Content-Length': uploadContent.length,
+        'Content-Length': String(uploadContent.length),
         'Content-Type': 'application/encrypted-file',
         'X-ACTUAL-TOKEN': userToken,
         'X-ACTUAL-FILE-ID': cloudFileId,
         'X-ACTUAL-NAME': encodeURIComponent(budgetName),
-        'X-ACTUAL-FORMAT': 2,
+        'X-ACTUAL-FORMAT': '2',
         ...(uploadMeta
           ? { 'X-ACTUAL-ENCRYPT-META': JSON.stringify(uploadMeta) }
           : null),
         ...(groupId ? { 'X-ACTUAL-GROUP-ID': groupId } : null),
+        // TODO: fix me
+        // oxlint-disable-next-line typescript/no-explicit-any
       },
       body: uploadContent,
     });
   } catch (err) {
-    console.log('Upload failure', err);
+    logger.log('Upload failure', err);
 
     if (err instanceof PostError) {
       throw FileUploadError(
@@ -354,7 +396,9 @@ export async function possiblyUpload() {
   }
 
   // Don't block on uploading
-  upload().catch(() => {});
+  upload().catch(() => {
+    // Ignore errors
+  });
 }
 
 export async function removeFile(fileId) {
@@ -366,7 +410,7 @@ export async function removeFile(fileId) {
   });
 }
 
-export async function listRemoteFiles(): Promise<RemoteFile[] | null> {
+export async function listRemoteFiles(): Promise<RemoteFile[]> {
   const userToken = await asyncStorage.getItem('user-token');
   if (!userToken) {
     return null;
@@ -380,61 +424,31 @@ export async function listRemoteFiles(): Promise<RemoteFile[] | null> {
       },
     });
   } catch (e) {
-    console.log('Unexpected error fetching file list from server', e);
+    logger.log('Unexpected error fetching file list from server', e);
     return null;
   }
 
   if (res.status === 'error') {
-    console.log('Error fetching file list from server', res);
+    logger.log('Error fetching file list from server', res);
     return null;
   }
 
-  return res.data.map(file => ({
-    ...file,
-    hasKey: encryption.hasKey(file.encryptKeyId),
-  }));
+  return res.data
+    .map(file => ({
+      ...file,
+      hasKey: encryption.hasKey(file.encryptKeyId),
+    }))
+    .filter(Boolean);
 }
 
-export async function getRemoteFile(
-  fileId: string,
-): Promise<RemoteFile | null> {
-  const userToken = await asyncStorage.getItem('user-token');
-  if (!userToken) {
-    return null;
-  }
-
-  let res;
-  try {
-    res = await fetchJSON(getServer().SYNC_SERVER + '/get-user-file-info', {
-      headers: {
-        'X-ACTUAL-TOKEN': userToken,
-        'X-ACTUAL-FILE-ID': fileId,
-      },
-    });
-  } catch (e) {
-    console.log('Unexpected error fetching file from server', e);
-    return null;
-  }
-
-  if (res.status === 'error') {
-    console.log('Error fetching file from server', res);
-    return null;
-  }
-
-  return {
-    ...res.data,
-    hasKey: encryption.hasKey(res.data.encryptKeyId),
-  };
-}
-
-export async function download(fileId) {
+export async function download(cloudFileId) {
   const userToken = await asyncStorage.getItem('user-token');
   const syncServer = getServer().SYNC_SERVER;
 
   const userFileFetch = fetch(`${syncServer}/download-user-file`, {
     headers: {
       'X-ACTUAL-TOKEN': userToken,
-      'X-ACTUAL-FILE-ID': fileId,
+      'X-ACTUAL-FILE-ID': cloudFileId,
     },
   })
     .then(checkHTTPStatus)
@@ -445,18 +459,18 @@ export async function download(fileId) {
       return res.buffer();
     })
     .catch(err => {
-      console.log('Download failure', err);
+      logger.log('Download failure', err);
       throw FileDownloadError('download-failure');
     });
 
   const userFileInfoFetch = fetchJSON(`${syncServer}/get-user-file-info`, {
     headers: {
       'X-ACTUAL-TOKEN': userToken,
-      'X-ACTUAL-FILE-ID': fileId,
+      'X-ACTUAL-FILE-ID': cloudFileId,
     },
   }).catch(err => {
-    console.log('Error fetching file info', err);
-    throw FileDownloadError('internal', { fileId });
+    logger.log('Error fetching file info', err);
+    throw FileDownloadError('internal', { fileId: cloudFileId });
   });
 
   const [userFileInfoRes, userFileRes] = await Promise.all([
@@ -465,11 +479,11 @@ export async function download(fileId) {
   ]);
 
   if (userFileInfoRes.status !== 'ok') {
-    console.log(
+    logger.log(
       'Could not download file from the server. Are you sure you have the right file ID?',
       userFileInfoRes,
     );
-    throw FileDownloadError('internal', { fileId });
+    throw FileDownloadError('internal', { fileId: cloudFileId });
   }
 
   const fileData = userFileInfoRes.data;

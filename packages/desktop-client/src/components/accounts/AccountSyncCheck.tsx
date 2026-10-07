@@ -1,20 +1,24 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 
-import { unlinkAccount } from 'loot-core/client/accounts/accountsSlice';
-import { type AccountEntity } from 'loot-core/types/models';
+import { Button } from '@actual-app/components/button';
+import { SvgExclamationOutline } from '@actual-app/components/icons/v1';
+import { Popover } from '@actual-app/components/popover';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import type { AccountEntity } from '@actual-app/core/types/models';
 
-import { authorizeBank } from '../../gocardless';
-import { useAccounts } from '../../hooks/useAccounts';
-import { useFailedAccounts } from '../../hooks/useFailedAccounts';
-import { SvgExclamationOutline } from '../../icons/v1';
-import { useDispatch } from '../../redux';
-import { theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Link } from '../common/Link';
-import { Popover } from '../common/Popover';
-import { View } from '../common/View';
+import { useUnlinkAccountMutation } from '#accounts';
+import { getFailedSyncError, isAccountFailedSync } from '#accounts/syncStatus';
+import { Link } from '#components/common/Link';
+import { authorizeBank as authorizeEnableBanking } from '#enablebanking';
+import { authorizeBank as authorizeGoCardless } from '#gocardless';
+import { useAccounts } from '#hooks/useAccounts';
+import { useCurrentAccess } from '#hooks/useCurrentAccess';
+import { useFailedAccounts } from '#hooks/useFailedAccounts';
+import { pushModal } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
 
 function useErrorMessage() {
   const { t } = useTranslation();
@@ -45,6 +49,14 @@ function useErrorMessage() {
       case 'RATE_LIMIT_EXCEEDED':
         return t('Rate limit exceeded for this item. Please try again later.');
 
+      case 'GOCARDLESS_NOT_CONFIGURED':
+        return t(
+          'Your GoCardless credentials are missing. Please re-enter them to restore bank sync.',
+        );
+
+      case 'TIMED_OUT':
+        return t('The request timed out. Please try again later.');
+
       case 'INVALID_ACCESS_TOKEN':
         return t(
           'Your SimpleFIN Access Token is no longer valid. Please reset and generate a new token.',
@@ -62,6 +74,11 @@ function useErrorMessage() {
             </Link>
             .
           </Trans>
+        );
+
+      case 'ACCOUNT_MISSING':
+        return t(
+          'This account was not found in SimpleFIN. Try unlinking and relinking the account.',
         );
 
       default:
@@ -82,8 +99,9 @@ function useErrorMessage() {
 }
 
 export function AccountSyncCheck() {
-  const accounts = useAccounts();
+  const { data: accounts = [] } = useAccounts();
   const failedAccounts = useFailedAccounts();
+  const { isAdmin } = useCurrentAccess();
   const dispatch = useDispatch();
   const { id } = useParams();
   const [open, setOpen] = useState(false);
@@ -95,41 +113,62 @@ export function AccountSyncCheck() {
       setOpen(false);
 
       if (acc.account_id) {
-        authorizeBank(dispatch, { upgradingAccountId: acc.account_id });
+        if (acc.account_sync_source === 'enableBanking') {
+          void authorizeEnableBanking(dispatch);
+        } else if (acc.account_sync_source === 'goCardless') {
+          void authorizeGoCardless(dispatch);
+        }
       }
     },
     [dispatch],
   );
 
+  const unlinkAccount = useUnlinkAccountMutation();
   const unlink = useCallback(
     (acc: AccountEntity) => {
       if (acc.id) {
-        dispatch(unlinkAccount({ id: acc.id }));
+        unlinkAccount.mutate({ id: acc.id });
       }
 
       setOpen(false);
     },
-    [dispatch],
+    [unlinkAccount],
   );
 
-  if (!failedAccounts || !id) {
-    return null;
-  }
+  const onConfigureGoCardless = useCallback(() => {
+    setOpen(false);
+    dispatch(
+      pushModal({
+        modal: {
+          name: 'gocardless-init',
+          options: {
+            onSuccess: () => {
+              // credentials updated
+            },
+          },
+        },
+      }),
+    );
+  }, [dispatch]);
 
-  const error = failedAccounts.get(id);
-  if (!error) {
+  if (!id) {
     return null;
   }
 
   const account = accounts.find(account => account.id === id);
-  if (!account) {
+  if (!account || !isAccountFailedSync(account)) {
     return null;
   }
+
+  // prefer the detailed error from the client that ran the sync, fall back
+  // to the persisted status for failures that happened on another client
+  const error = failedAccounts.get(id) ?? getFailedSyncError(account);
 
   const { type, code } = error;
   const showAuth =
     (type === 'ITEM_ERROR' && code === 'ITEM_LOGIN_REQUIRED') ||
     (type === 'INVALID_INPUT' && code === 'INVALID_ACCESS_TOKEN');
+  const isGoCardlessNotConfigured = type === 'GOCARDLESS_NOT_CONFIGURED';
 
   return (
     <View>
@@ -150,7 +189,7 @@ export function AccountSyncCheck() {
           style={{ width: 14, height: 14, marginRight: 5 }}
         />{' '}
         <Trans>
-          This account is experiencing connection problems. Let’s fix it.
+          This account is experiencing connection problems. Let's fix it.
         </Trans>
       </Button>
 
@@ -182,6 +221,20 @@ export function AccountSyncCheck() {
                 style={{ marginLeft: 5 }}
               >
                 <Trans>Reauthorize</Trans>
+              </Button>
+            </>
+          ) : isGoCardlessNotConfigured && isAdmin ? (
+            <>
+              <Button onPress={() => unlink(account)}>
+                <Trans>Unlink</Trans>
+              </Button>
+              <Button
+                variant="primary"
+                autoFocus
+                onPress={onConfigureGoCardless}
+                style={{ marginLeft: 5 }}
+              >
+                <Trans>Configure</Trans>
               </Button>
             </>
           ) : (

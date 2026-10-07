@@ -1,15 +1,17 @@
 // @ts-strict-ignore
-import React, {
-  type ComponentType,
-  type MouseEventHandler,
-  type ReactNode,
-  type SVGProps,
-  type CSSProperties,
+import React from 'react';
+import type {
+  ComponentProps,
+  ComponentType,
+  CSSProperties,
+  ReactNode,
+  SVGProps,
 } from 'react';
 
-import { styles, theme } from '../../style';
-import { Block } from '../common/Block';
-import { View } from '../common/View';
+import { Block } from '@actual-app/components/block';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
 import { ItemContent } from './ItemContent';
 
@@ -22,7 +24,7 @@ type ItemProps = {
   children?: ReactNode;
   style?: CSSProperties;
   indent?: number;
-  onClick?: MouseEventHandler<HTMLDivElement>;
+  onClick?: ComponentProps<typeof ItemContent>['onClick'];
   forceHover?: boolean;
   forceActive?: boolean;
 };

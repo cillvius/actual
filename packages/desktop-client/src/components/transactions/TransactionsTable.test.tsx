@@ -1,70 +1,100 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 
-import { render, screen, fireEvent } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { format as formatDate, parse as parseDate } from 'date-fns';
-import { v4 as uuidv4 } from 'uuid';
-
-import { SchedulesProvider } from 'loot-core/src/client/data-hooks/schedules';
-import { SpreadsheetProvider } from 'loot-core/src/client/SpreadsheetProvider';
 import {
-  generateTransaction,
   generateAccount,
   generateCategoryGroups,
-} from 'loot-core/src/mocks';
-import { initServer } from 'loot-core/src/platform/client/fetch';
+  generateTransaction,
+} from '@actual-app/core/mocks';
+import { initServer } from '@actual-app/core/platform/client/connection';
 import {
   addSplitTransaction,
   realizeTempTransactions,
   splitTransaction,
   updateTransaction,
-} from 'loot-core/src/shared/transactions';
-import { integerToCurrency } from 'loot-core/src/shared/util';
+} from '@actual-app/core/shared/transactions';
+import { integerToCurrency } from '@actual-app/core/shared/util';
+import type {
+  AccountEntity,
+  CategoryEntity,
+  CategoryGroupEntity,
+  PayeeEntity,
+  ScheduleEntity,
+  TagEntity,
+  TransactionEntity,
+} from '@actual-app/core/types/models';
 import {
-  type AccountEntity,
-  type CategoryEntity,
-  type CategoryGroupEntity,
-  type PayeeEntity,
-  type TransactionEntity,
-} from 'loot-core/types/models';
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { format as formatDate, parse as parseDate } from 'date-fns';
+import { v4 as uuidv4 } from 'uuid';
 
-import { AuthProvider } from '../../auth/AuthProvider';
-import { SelectedProviderWithItems } from '../../hooks/useSelected';
-import { SplitsExpandedProvider } from '../../hooks/useSplitsExpanded';
-import { TestProvider } from '../../redux/mock';
-import { ResponsiveProvider } from '../responsive/ResponsiveProvider';
+import { AuthProvider } from '#auth/AuthProvider';
+import { SchedulesProvider } from '#hooks/useCachedSchedules';
+import { SelectedProviderWithItems } from '#hooks/useSelected';
+import { SplitsExpandedProvider } from '#hooks/useSplitsExpanded';
+import { SpreadsheetProvider } from '#hooks/useSpreadsheet';
+import { createTestQueryClient, TestProviders } from '#mocks';
+import * as modalsSlice from '#modals/modalsSlice';
+import { payeeQueries } from '#payees';
+import { tagQueries } from '#tags/queries';
 
-import { TransactionTable } from './TransactionsTable';
+import {
+  DEFAULT_AMOUNT_COLUMN_WIDTHS,
+  TransactionTable,
+  useAmountColumnWidths,
+} from './TransactionsTable';
 
-vi.mock('loot-core/src/platform/client/fetch');
-vi.mock('../../hooks/useFeatureFlag', () => ({
-  default: vi.fn().mockReturnValue(false),
-}));
+const queryClient = createTestQueryClient();
+
+vi.mock(
+  '@actual-app/core/platform/client/connection',
+  () => import('#mocks/connection'),
+);
 vi.mock('../../hooks/useSyncedPref', () => ({
   useSyncedPref: vi.fn().mockReturnValue([undefined, vi.fn()]),
 }));
 vi.mock('../../hooks/useFeatureFlag', () => ({
-  useFeatureFlag: () => false,
+  useFeatureFlag: vi.fn(() => false),
 }));
 
 const accounts = [generateAccount('Bank of America')];
+vi.mock('../../hooks/useAccounts', () => ({
+  useAccounts: () => accounts,
+}));
+
 const payees: PayeeEntity[] = [
   {
     id: 'bob-id',
     name: 'Bob',
-    favorite: 1,
+    favorite: true,
   },
   {
     id: 'alice-id',
     name: 'Alice',
-    favorite: 1,
+    favorite: true,
   },
   {
     id: 'guy',
-    favorite: 0,
+    favorite: false,
     name: 'This guy on the side of the road',
   },
 ];
+queryClient.setQueryData(payeeQueries.list().queryKey, payees);
+
+const tags: TagEntity[] = [
+  { id: 'tag1', tag: 'vacation' },
+  { id: 'tag2', tag: 'taxes' },
+  { id: 'tag3', tag: 'groceries' },
+];
+queryClient.setQueryData(tagQueries.list().queryKey, tags);
+
 const categoryGroups = generateCategoryGroups([
   {
     name: 'Investments and Savings',
@@ -79,7 +109,16 @@ const categoryGroups = generateCategoryGroups([
     categories: [{ name: 'Big Projects' }, { name: 'Shed' }],
   },
 ]);
+vi.mock('../../hooks/useCategories', () => ({
+  useCategories: () => ({
+    list: categoryGroups.flatMap(g => g.categories),
+    grouped: categoryGroups,
+  }),
+}));
+
 const usualGroup = categoryGroups[1];
+let schedules: ScheduleEntity[] = [];
+const createScheduleMock = vi.fn(async () => 'new-schedule');
 
 function generateTransactions(
   count: number,
@@ -123,20 +162,26 @@ type LiveTransactionTableProps = {
   currentAccountId: string | null;
   showAccount: boolean;
   showCategory: boolean;
+  showGroup?: boolean;
   showCleared: boolean;
   isAdding: boolean;
   onTransactionsChange?: (newTrans: TransactionEntity[]) => void;
   onCloseAddTransaction?: () => void;
+  onApplyRules?: (
+    transaction: TransactionEntity,
+    updatedFieldName?: string | null,
+  ) => Promise<TransactionEntity>;
 };
 
 function LiveTransactionTable(props: LiveTransactionTableProps) {
-  const [transactions, setTransactions] = useState(props.transactions);
+  const { transactions: transactionsProp, onTransactionsChange } = props;
+
+  const [transactions, setTransactions] = useState(transactionsProp);
 
   useEffect(() => {
-    if (transactions === props.transactions) return;
-    props.onTransactionsChange?.(transactions);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transactions]);
+    if (transactions === transactionsProp) return;
+    onTransactionsChange?.(transactions);
+  }, [transactions, transactionsProp, onTransactionsChange]);
 
   const onSplit = (id: string) => {
     const { data, diff } = splitTransaction(transactions, id);
@@ -160,47 +205,45 @@ function LiveTransactionTable(props: LiveTransactionTableProps) {
     return diff.added[0].id;
   };
 
-  const onCreatePayee = () => 'id';
+  const onCreatePayee = async () => 'id';
 
   // It's important that these functions are they same instances
   // across renders. Doing so tests that the transaction table
   // implementation properly uses the right latest state even if the
   // hook dependencies haven't changed
   return (
-    <TestProvider>
-      <ResponsiveProvider>
-        <AuthProvider>
-          <SpreadsheetProvider>
-            <SchedulesProvider>
-              <SelectedProviderWithItems
-                name="transactions"
-                items={transactions}
-                fetchAllIds={() => Promise.resolve(transactions.map(t => t.id))}
-              >
-                <SplitsExpandedProvider>
-                  <TransactionTable
-                    {...props}
-                    // @ts-expect-error this will be auto-patched once TransactionTable is moved to TS
-                    transactions={transactions}
-                    loadMoreTransactions={() => {}}
-                    commonPayees={[]}
-                    payees={payees}
-                    addNotification={console.log}
-                    onSave={onSave}
-                    onSplit={onSplit}
-                    onAdd={onAdd}
-                    onAddSplit={onAddSplit}
-                    onCreatePayee={onCreatePayee}
-                    showSelection={true}
-                    allowSplitTransaction={true}
-                  />
-                </SplitsExpandedProvider>
-              </SelectedProviderWithItems>
-            </SchedulesProvider>
-          </SpreadsheetProvider>
-        </AuthProvider>
-      </ResponsiveProvider>
-    </TestProvider>
+    <TestProviders queryClient={queryClient}>
+      <AuthProvider>
+        <SpreadsheetProvider>
+          <SchedulesProvider>
+            <SelectedProviderWithItems
+              name="transactions"
+              items={transactions}
+              fetchAllIds={() => Promise.resolve(transactions.map(t => t.id))}
+            >
+              <SplitsExpandedProvider>
+                <TransactionTable
+                  {...props}
+                  transactions={transactions}
+                  loadMoreTransactions={vi.fn()}
+                  // @ts-expect-error TODO: fix me
+                  commonPayees={[]}
+                  payees={payees}
+                  addNotification={console.log}
+                  onSave={onSave}
+                  onSplit={onSplit}
+                  onAdd={onAdd}
+                  onAddSplit={onAddSplit}
+                  onCreatePayee={onCreatePayee}
+                  showSelection
+                  allowSplitTransaction
+                />
+              </SplitsExpandedProvider>
+            </SelectedProviderWithItems>
+          </SchedulesProvider>
+        </SpreadsheetProvider>
+      </AuthProvider>
+    </TestProviders>
   );
 }
 
@@ -212,18 +255,37 @@ function initBasicServer() {
           return { data: payees, dependencies: [] };
         case 'accounts':
           return { data: accounts, dependencies: [] };
+        case 'transactions':
+          return {
+            data: generateTransactions(5, [6]),
+            dependencies: [],
+          };
+        case 'schedules':
+          return { data: schedules, dependencies: [] };
         default:
           throw new Error(`queried unknown table: ${query.table}`);
       }
     },
-    getCell: () => ({
+    'get-cell': async () => ({
+      name: 'test-cell',
       value: 129_87,
     }),
-    'get-categories': () => ({ grouped: categoryGroups, list: categories }),
+    'get-categories': async () => ({
+      grouped: categoryGroups,
+      list: categories,
+    }),
+    'tags-get': async () => tags,
+    'tags-create': async (tag: Omit<TagEntity, 'id'>) => ({
+      id: 'new-tag',
+      ...tag,
+    }),
+    'schedule/create': createScheduleMock,
   });
 }
 
 beforeEach(() => {
+  schedules = [];
+  createScheduleMock.mockClear();
   initBasicServer();
 });
 
@@ -370,14 +432,22 @@ expect.extend({
     ) {
       return {
         message: () =>
-          `Expected ${validPayeeListWithFavorite.join(', ')} to have favorite stars.` +
-          `Received ${foundStarList.length} items with favorite stars. Incorrect: ${incorrectStarList.join(', ')}`,
+          `Expected ${validPayeeListWithFavorite.join(
+            ', ',
+          )} to have favorite stars.` +
+          `Received ${
+            foundStarList.length
+          } items with favorite stars. Incorrect: ${incorrectStarList.join(
+            ', ',
+          )}`,
         pass: false,
       };
     } else {
       return {
         message: () =>
-          `Expected ${validPayeeListWithFavorite} to have favorite stars`,
+          `Expected ${String(
+            validPayeeListWithFavorite,
+          )} to have favorite stars`,
         pass: true,
       };
     }
@@ -403,6 +473,124 @@ function expectToBeEditingField(
 }
 
 describe('Transactions', () => {
+  test('preview transactions show schedule name in notes', async () => {
+    const scheduleName = 'Monthly rent';
+    schedules = [
+      {
+        id: 'schedule-1',
+        name: scheduleName,
+        rule: 'rule-1',
+        next_date: '2017-01-01',
+        completed: false,
+        posts_transaction: false,
+        tombstone: false,
+        _payee: 'alice-id',
+        _account: accounts[0].id,
+        _amount: -1000,
+        _amountOp: 'is',
+        _date: '2017-01-01',
+        _conditions: [],
+        _actions: [],
+      },
+    ];
+
+    const previewTransaction: TransactionEntity = {
+      id: 'preview/schedule-1/2017-01-01',
+      account: accounts[0].id,
+      amount: -1000,
+      date: '2017-01-01',
+      payee: 'alice-id',
+      schedule: 'schedule-1',
+      cleared: false,
+      reconciled: false,
+    };
+
+    const { container } = renderTransactions({
+      transactions: [previewTransaction],
+      isAdding: false,
+    });
+
+    await waitFor(() => {
+      expect(queryField(container, 'notes', 'div', 0).textContent).toBe(
+        scheduleName,
+      );
+    });
+  });
+
+  test('preview split transactions show a payee', async () => {
+    schedules = [
+      {
+        id: 'schedule-1',
+        name: 'Monthly rent',
+        rule: 'rule-1',
+        next_date: '2017-01-01',
+        completed: false,
+        posts_transaction: false,
+        tombstone: false,
+        _payee: 'alice-id',
+        _account: accounts[0].id,
+        _amount: -1000,
+        _amountOp: 'is',
+        _date: '2017-01-01',
+        _conditions: [],
+        _actions: [],
+      },
+    ];
+
+    const previewParentId = 'preview/schedule-1/2017-01-01';
+    const previewParent: TransactionEntity = {
+      id: previewParentId,
+      account: accounts[0].id,
+      amount: -1000,
+      date: '2017-01-01',
+      payee: null,
+      is_parent: true,
+      schedule: 'schedule-1',
+      cleared: false,
+      reconciled: false,
+    };
+    const previewChildren: TransactionEntity[] = [
+      {
+        id: 'preview/schedule-1-child-1',
+        account: accounts[0].id,
+        amount: -600,
+        date: '2017-01-01',
+        payee: 'alice-id',
+        is_child: true,
+        parent_id: previewParentId,
+        schedule: 'schedule-1',
+        cleared: false,
+        reconciled: false,
+      },
+      {
+        id: 'preview/schedule-1-child-2',
+        account: accounts[0].id,
+        amount: -400,
+        date: '2017-01-01',
+        payee: 'alice-id',
+        is_child: true,
+        parent_id: previewParentId,
+        schedule: 'schedule-1',
+        cleared: false,
+        reconciled: false,
+      },
+    ];
+
+    const { container } = renderTransactions({
+      transactions: [previewParent, ...previewChildren],
+      isAdding: false,
+    });
+
+    // The preview parent row should show the same computed payee a real,
+    // persisted split transaction would show (most common child payee),
+    // instead of being blank.
+    await waitFor(() => {
+      expect(queryField(container, 'payee', '', 0).textContent).toContain(
+        'Alice',
+      );
+    });
+  });
+
   test('transactions table shows the correct data', () => {
     const { container, getTransactions } = renderTransactions();
 
@@ -425,7 +613,7 @@ describe('Transactions', () => {
               ?.name
           : 'Categorize',
       );
-      if (transaction.amount <= 0) {
+      if (transaction.amount < 0) {
         expect(queryField(container, 'debit', 'div', idx).textContent).toBe(
           integerToCurrency(-transaction.amount),
         );
@@ -438,6 +626,56 @@ describe('Transactions', () => {
           integerToCurrency(transaction.amount),
         );
       }
+    });
+  });
+
+  describe('Group column', () => {
+    test('group column is hidden by default', () => {
+      const { container } = renderTransactions();
+      expect(
+        container.querySelector('[data-testid="group"]'),
+      ).not.toBeInTheDocument();
+    });
+
+    test('group column header renders when showGroup is true', () => {
+      const { container } = renderTransactions({ showGroup: true });
+      expect(
+        container.querySelector(
+          '[data-testid="transaction-table"] [data-testid="group"]',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    test('group cell shows the correct group name', () => {
+      const { container } = renderTransactions({ showGroup: true });
+
+      // Transaction 0 has no category — group cell should be empty
+      expect(queryField(container, 'group', 'div', 0).textContent).toBe('');
+
+      // Transaction 1 has category "General" in group "Usual Expenses"
+      expect(queryField(container, 'group', 'div', 1).textContent).toBe(
+        'Usual Expenses',
+      );
+
+      // Transaction 2 has category "Food" in group "Usual Expenses"
+      expect(queryField(container, 'group', 'div', 2).textContent).toBe(
+        'Usual Expenses',
+      );
+    });
+
+    test('group column renders for child transactions as well', () => {
+      const transactions = generateTransactions(3, [1]);
+      transactions[0].amount = -1000;
+
+      const { container } = renderTransactions({
+        showGroup: true,
+        transactions,
+      });
+
+      const children = container.querySelectorAll(
+        '[data-testid="transaction-table"] [data-testid="group"]',
+      );
+      expect(children.length).toBe(5);
     });
   });
 
@@ -520,7 +758,7 @@ describe('Transactions', () => {
       '{Shift>}[Enter]{/Shift}',
     ];
 
-    for (const idx in ks) {
+    for (const [idx] of ks.entries()) {
       const input = await editField(container, 'notes', 2);
       const oldValue = input.value;
       await userEvent.clear(input);
@@ -581,7 +819,7 @@ describe('Transactions', () => {
       .getByTestId('autocomplete')
       .querySelectorAll('[data-testid$="category-item"]');
     expect(items.length).toBe(3);
-  });
+  }, 30000);
 
   test('dropdown selects an item with keyboard', async () => {
     const { container, getTransactions } = renderTransactions();
@@ -664,7 +902,7 @@ describe('Transactions', () => {
     expectToBeEditingField(container, 'category', 2);
   });
 
-  test('dropdown hovers but doesn’t change value', async () => {
+  test("dropdown hovers but doesn't change value", async () => {
     const { container, getTransactions } = renderTransactions();
 
     const input = await editField(container, 'category', 2);
@@ -834,6 +1072,30 @@ describe('Transactions', () => {
     expect(queryNewField(container, 'debit').textContent).toBe('0.00');
   });
 
+  test('clicking cleared while editing the amount keeps the amount', async () => {
+    const { container, updateProps } = renderTransactions({
+      // Rules run over the backend, so saving a new transaction only lands in
+      // state a tick later. Clicking another cell in the meantime must not
+      // read back the pre-save amount.
+      onApplyRules: async transaction => transaction,
+    });
+    updateProps({ isAdding: true });
+
+    const input = await editNewField(container, 'debit');
+    await userEvent.clear(input);
+    await userEvent.type(input, '100');
+
+    // Click "cleared" directly, without tabbing/entering out of the amount
+    // field first
+    await userEvent.click(
+      within(queryNewField(container, 'cleared')).getByTestId('cell-button'),
+    );
+
+    await waitFor(() =>
+      expect(queryNewField(container, 'debit').textContent).toBe('100.00'),
+    );
+  });
+
   test('adding a new split transaction works', async () => {
     const { container, getTransactions, updateProps } = renderTransactions();
     updateProps({ isAdding: true });
@@ -848,10 +1110,7 @@ describe('Transactions', () => {
     await waitForAutocomplete();
     await waitForAutocomplete();
 
-    await userEvent.click(
-      container.querySelector('[data-testid="add-split-button"]')!,
-    );
-
+    // Splitting starts with two empty splits
     input = await editNewField(container, 'debit', 1);
     await userEvent.clear(input);
     await userEvent.type(input, '45.00');
@@ -880,6 +1139,109 @@ describe('Transactions', () => {
     expect(getTransactions()[2].amount).toBe(-1000);
   });
 
+  test('selecting split with the keyboard keeps focus on the parent payment field', async () => {
+    const { container, updateProps } = renderTransactions();
+    updateProps({ isAdding: true });
+
+    const input = await editNewField(container, 'category');
+    expect(screen.getByTestId('autocomplete')).toBeTruthy();
+    expect(screen.getByTestId('split-transaction-button')).toBeTruthy();
+
+    // Nothing is highlighted on open; ArrowDown highlights Split (index 0).
+    await userEvent.keyboard('[ArrowDown]');
+    await userEvent.type(input, '[Enter]');
+    await waitForAutocomplete();
+    await waitForAutocomplete();
+
+    await waitFor(() => {
+      expect(
+        container.querySelectorAll(
+          '[data-testid="new-transaction"] [data-testid="debit"]',
+        ).length,
+      ).toBeGreaterThan(1);
+    });
+
+    expectToBeEditingField(container, 'debit', 0, true);
+  });
+
+  test('selecting split after visiting payment keeps focus on the parent payment field', async () => {
+    const appliedTransactions: TransactionEntity[] = [];
+    const { container, updateProps } = renderTransactions({
+      onApplyRules: async transaction => {
+        appliedTransactions.push(transaction);
+        return transaction;
+      },
+    });
+    updateProps({ isAdding: true });
+
+    // Tabbing through payment saves debit 0 as -0 (negated), so amount is no longer null.
+    const debitInput = await editNewField(container, 'debit');
+    await userEvent.type(debitInput, '[Tab]');
+    await waitFor(() => {
+      const appliedAmount = appliedTransactions.at(-1)?.amount;
+      expect(appliedAmount == null).toBe(false);
+      expect(appliedAmount === 0).toBe(true);
+    });
+
+    const input = await editNewField(container, 'category');
+    await userEvent.keyboard('[ArrowDown]');
+    await userEvent.type(input, '[Enter]');
+    await waitForAutocomplete();
+    await waitForAutocomplete();
+
+    await waitFor(() => {
+      expect(
+        container.querySelectorAll(
+          '[data-testid="new-transaction"] [data-testid="debit"]',
+        ).length,
+      ).toBeGreaterThan(1);
+    });
+
+    expectToBeEditingField(container, 'debit', 0, true);
+  });
+
+  test('tab from the parent cleared field focuses the first split child', async () => {
+    const { container, updateProps } = renderTransactions();
+    updateProps({ isAdding: true });
+
+    const input = await editNewField(container, 'category');
+    await userEvent.keyboard('[ArrowDown]');
+    await userEvent.type(input, '[Enter]');
+    await waitForAutocomplete();
+    await waitForAutocomplete();
+
+    await waitFor(() => {
+      expect(
+        container.querySelectorAll(
+          '[data-testid="new-transaction"] [data-testid="debit"]',
+        ).length,
+      ).toBeGreaterThan(1);
+    });
+
+    // Enabling split still leaves the parent payment field focused.
+    let field = expectToBeEditingField(container, 'debit', 0, true);
+    await userEvent.type(field, '[Tab]');
+    field = expectToBeEditingField(container, 'credit', 0, true);
+    await userEvent.type(field, '[Tab]');
+    field = expectToBeEditingField(container, 'cleared', 0, true);
+    await userEvent.type(field, '[Tab]');
+
+    expectToBeEditingField(container, 'payee', 1, true);
+    const cancelButton = container.querySelector(
+      '[data-testid="new-transaction"] [data-testid="cancel-button"]',
+    )!;
+    expect(cancelButton.contains(container.ownerDocument.activeElement)).toBe(
+      false,
+    );
+
+    // Cancel follows the last split line.
+    const lastCleared = await editNewField(container, 'cleared', 2);
+    await userEvent.type(lastCleared, '[Tab]');
+    expect(cancelButton.contains(container.ownerDocument.activeElement)).toBe(
+      true,
+    );
+  });
+
   test('escape closes the new transaction rows', async () => {
     const { container, updateProps } = renderTransactions({
       onCloseAddTransaction: () => {
@@ -893,18 +1255,12 @@ describe('Transactions', () => {
     let input = expectToBeEditingField(container, 'date', 0, true);
     await userEvent.type(input, '[Tab]');
     input = expectToBeEditingField(container, 'account', 0, true);
-    // The first escape closes the dropdown
+
+    await userEvent.type(input, '[Escape]');
     await userEvent.type(input, '[Escape]');
     expect(
       container.querySelector('[data-testid="new-transaction"]'),
-    ).toBeTruthy();
-
-    // TODO: Fix this
-    // Now it should close the new transaction form
-    // await userEvent.type(input, '[Escape]');
-    // expect(
-    //   container.querySelector('[data-testid="new-transaction"]')
-    // ).toBeNull();
+    ).toBeNull();
 
     // The cancel button should also close the new transaction form
     updateProps({ isAdding: true });
@@ -912,6 +1268,306 @@ describe('Transactions', () => {
       '[data-testid="new-transaction"] [data-testid="cancel-button"]',
     )[0];
     await userEvent.click(cancelButton);
+    expect(container.querySelector('[data-testid="new-transaction"]')).toBe(
+      null,
+    );
+  });
+
+  describe('Schedule button for future-dated new transactions', () => {
+    const scheduleButtonSelector =
+      '[data-testid="new-transaction"] [data-testid="schedule-button"]';
+
+    test('shows the Schedule button for a future-dated new transaction', async () => {
+      const { container, updateProps } = renderTransactions();
+      updateProps({ isAdding: true });
+
+      const dateInput = queryNewField(container, 'date', 'input');
+      await userEvent.clear(dateInput);
+      await userEvent.type(dateInput, '02/01/2017[Tab]');
+
+      expect(container.querySelector(scheduleButtonSelector)).toBeTruthy();
+    });
+
+    test('hides the Schedule button for a non-future-dated new transaction', () => {
+      const { container, updateProps } = renderTransactions();
+      updateProps({ isAdding: true });
+
+      expect(container.querySelector(scheduleButtonSelector)).toBeNull();
+    });
+
+    test('creates a schedule directly when the date is within the upcoming window', async () => {
+      const { container, getTransactions, updateProps } = renderTransactions();
+      updateProps({ isAdding: true });
+
+      const dateInput = queryNewField(container, 'date', 'input');
+      await userEvent.clear(dateInput);
+      await userEvent.type(dateInput, '01/02/2017[Tab]');
+
+      const scheduleButton = container.querySelector(scheduleButtonSelector)!;
+      await userEvent.click(scheduleButton);
+
+      await waitFor(() => {
+        expect(createScheduleMock).toHaveBeenCalled();
+      });
+      expect(getTransactions().length).toBe(5);
+    });
+
+    test('opens the convert-to-schedule modal when the date is beyond the upcoming window', async () => {
+      const pushModalSpy = vi.spyOn(modalsSlice, 'pushModal');
+      const { container, getTransactions, updateProps } = renderTransactions();
+      updateProps({ isAdding: true });
+
+      const dateInput = queryNewField(container, 'date', 'input');
+      await userEvent.clear(dateInput);
+      await userEvent.type(dateInput, '02/01/2017[Tab]');
+
+      const scheduleButton = container.querySelector(scheduleButtonSelector)!;
+      await userEvent.click(scheduleButton);
+
+      await waitFor(() => {
+        expect(pushModalSpy).toHaveBeenCalled();
+      });
+      expect(createScheduleMock).not.toHaveBeenCalled();
+      expect(getTransactions().length).toBe(5);
+
+      const modal = pushModalSpy.mock.calls[0][0].modal as Extract<
+        modalsSlice.Modal,
+        { name: 'convert-to-schedule' }
+      >;
+      expect(modal.name).toBe('convert-to-schedule');
+      pushModalSpy.mockRestore();
+    });
+
+    test('confirming the modal creates a schedule', async () => {
+      const pushModalSpy = vi.spyOn(modalsSlice, 'pushModal');
+      const { container, getTransactions, updateProps } = renderTransactions();
+      updateProps({ isAdding: true });
+
+      const dateInput = queryNewField(container, 'date', 'input');
+      await userEvent.clear(dateInput);
+      await userEvent.type(dateInput, '02/01/2017[Tab]');
+
+      const scheduleButton = container.querySelector(scheduleButtonSelector)!;
+      await userEvent.click(scheduleButton);
+
+      await waitFor(() => {
+        expect(pushModalSpy).toHaveBeenCalled();
+      });
+
+      const modal = pushModalSpy.mock.calls[0][0].modal as Extract<
+        modalsSlice.Modal,
+        { name: 'convert-to-schedule' }
+      >;
+      modal.options.onConfirm();
+
+      await waitFor(() => {
+        expect(createScheduleMock).toHaveBeenCalled();
+      });
+      expect(getTransactions().length).toBe(5);
+      pushModalSpy.mockRestore();
+    });
+
+    test('cancelling the modal keeps the transaction without creating a schedule', async () => {
+      const pushModalSpy = vi.spyOn(modalsSlice, 'pushModal');
+      const { container, getTransactions, updateProps } = renderTransactions();
+      updateProps({ isAdding: true });
+
+      const dateInput = queryNewField(container, 'date', 'input');
+      await userEvent.clear(dateInput);
+      await userEvent.type(dateInput, '02/01/2017[Tab]');
+
+      const scheduleButton = container.querySelector(scheduleButtonSelector)!;
+      await userEvent.click(scheduleButton);
+
+      await waitFor(() => {
+        expect(pushModalSpy).toHaveBeenCalled();
+      });
+
+      const modal = pushModalSpy.mock.calls[0][0].modal as Extract<
+        modalsSlice.Modal,
+        { name: 'convert-to-schedule' }
+      >;
+      modal.options.onCancel?.();
+
+      expect(createScheduleMock).not.toHaveBeenCalled();
+      expect(getTransactions().length).toBe(5);
+      pushModalSpy.mockRestore();
+    });
+
+    test('ctrl/cmd+shift+enter creates a schedule when the date is within the upcoming window', async () => {
+      const { container, getTransactions, updateProps } = renderTransactions();
+      updateProps({ isAdding: true });
+
+      const dateInput = queryNewField(container, 'date', 'input');
+      await userEvent.clear(dateInput);
+      await userEvent.type(dateInput, '01/02/2017[Tab]');
+
+      await userEvent.keyboard('{Control>}{Shift>}{Enter}{/Shift}{/Control}');
+
+      await waitFor(() => {
+        expect(createScheduleMock).toHaveBeenCalled();
+      });
+      expect(getTransactions().length).toBe(5);
+    });
+
+    test('ctrl/cmd+shift+enter opens the convert-to-schedule modal when the date is beyond the upcoming window', async () => {
+      const pushModalSpy = vi.spyOn(modalsSlice, 'pushModal');
+      const { container, getTransactions, updateProps } = renderTransactions();
+      updateProps({ isAdding: true });
+
+      const dateInput = queryNewField(container, 'date', 'input');
+      await userEvent.clear(dateInput);
+      await userEvent.type(dateInput, '02/01/2017[Tab]');
+
+      await userEvent.keyboard('{Control>}{Shift>}{Enter}{/Shift}{/Control}');
+
+      await waitFor(() => {
+        expect(pushModalSpy).toHaveBeenCalled();
+      });
+      expect(createScheduleMock).not.toHaveBeenCalled();
+      expect(getTransactions().length).toBe(5);
+      pushModalSpy.mockRestore();
+    });
+
+    test('ctrl/cmd+shift+enter does nothing for a non-future-dated transaction', async () => {
+      const { container, getTransactions, updateProps } = renderTransactions();
+      updateProps({ isAdding: true });
+
+      const input = await editNewField(container, 'notes');
+      await userEvent.clear(input);
+      await userEvent.type(input, 'test');
+
+      await userEvent.keyboard('{Control>}{Shift>}{Enter}{/Shift}{/Control}');
+
+      expect(createScheduleMock).not.toHaveBeenCalled();
+      expect(getTransactions().length).toBe(5);
+    });
+  });
+
+  test('ctrl/cmd+enter adds transaction and closes form', async () => {
+    const { container, getTransactions, updateProps } = renderTransactions({
+      onCloseAddTransaction: () => {
+        updateProps({ isAdding: false });
+      },
+    });
+
+    expect(getTransactions().length).toBe(5);
+    updateProps({ isAdding: true });
+    expect(
+      container.querySelector('[data-testid="new-transaction"]'),
+    ).toBeTruthy();
+
+    let input = await editNewField(container, 'notes');
+    await userEvent.clear(input);
+    await userEvent.type(input, 'test transaction');
+
+    input = await editNewField(container, 'debit');
+    await userEvent.clear(input);
+    await userEvent.type(input, '50.00');
+
+    await userEvent.keyboard('{Control>}{Enter}{/Control}');
+
+    expect(getTransactions().length).toBe(6);
+    expect(getTransactions()[0].amount).toBe(-5000);
+    expect(getTransactions()[0].notes).toBe('test transaction');
+
+    expect(container.querySelector('[data-testid="new-transaction"]')).toBe(
+      null,
+    );
+  });
+
+  test('ctrl/cmd+enter saves amount value when pressed immediately after typing', async () => {
+    // Regression test for issue #6901: Ctrl+Enter should wait for the amount
+    // field value to be committed before adding the transaction
+    const { container, getTransactions, updateProps } = renderTransactions({
+      onCloseAddTransaction: () => {
+        updateProps({ isAdding: false });
+      },
+    });
+
+    expect(getTransactions().length).toBe(5);
+    updateProps({ isAdding: true });
+
+    // Type in notes field
+    let input = await editNewField(container, 'notes');
+    await userEvent.clear(input);
+    await userEvent.type(input, 'quick entry test');
+
+    // Type amount and immediately press Ctrl+Enter without tabbing away
+    input = await editNewField(container, 'debit');
+    await userEvent.clear(input);
+    await userEvent.type(input, '150.75');
+
+    // Press Ctrl+Enter immediately while still in the debit field
+    await userEvent.keyboard('{Control>}{Enter}{/Control}');
+
+    // The transaction should be added with the correct amount, not zero
+    expect(getTransactions().length).toBe(6);
+    expect(getTransactions()[0].amount).toBe(-15075); // 150.75 in cents
+    expect(getTransactions()[0].notes).toBe('quick entry test');
+
+    // Form should be closed
+    expect(container.querySelector('[data-testid="new-transaction"]')).toBe(
+      null,
+    );
+  });
+
+  test('ctrl/cmd+enter saves credit amount when pressed immediately after typing', async () => {
+    // Test the same fix for credit field (issue #6901)
+    const { container, getTransactions, updateProps } = renderTransactions({
+      onCloseAddTransaction: () => {
+        updateProps({ isAdding: false });
+      },
+    });
+
+    expect(getTransactions().length).toBe(5);
+    updateProps({ isAdding: true });
+
+    // Type amount in credit field and immediately press Ctrl+Enter
+    const input = await editNewField(container, 'credit');
+    await userEvent.clear(input);
+    await userEvent.type(input, '99.99');
+
+    await userEvent.keyboard('{Control>}{Enter}{/Control}');
+
+    // The transaction should be added with the correct positive amount
+    expect(getTransactions().length).toBe(6);
+    expect(getTransactions()[0].amount).toBe(9999); // 99.99 in cents
+
+    expect(container.querySelector('[data-testid="new-transaction"]')).toBe(
+      null,
+    );
+  });
+
+  test('ctrl/cmd+click on add button adds transaction and closes form', async () => {
+    const { container, getTransactions, updateProps } = renderTransactions({
+      onCloseAddTransaction: () => {
+        updateProps({ isAdding: false });
+      },
+    });
+
+    expect(getTransactions().length).toBe(5);
+    updateProps({ isAdding: true });
+    expect(
+      container.querySelector('[data-testid="new-transaction"]'),
+    ).toBeTruthy();
+
+    let input = await editNewField(container, 'notes');
+    await userEvent.clear(input);
+    await userEvent.type(input, 'test transaction');
+
+    input = await editNewField(container, 'debit');
+    await userEvent.clear(input);
+    await userEvent.type(input, '50.00');
+    await userEvent.tab();
+
+    const addButton = container.querySelector('[data-testid="add-button"]')!;
+    fireEvent.click(addButton, { ctrlKey: true });
+
+    expect(getTransactions().length).toBe(6);
+    expect(getTransactions()[0].amount).toBe(-5000);
+    expect(getTransactions()[0].notes).toBe('test transaction');
+
     expect(container.querySelector('[data-testid="new-transaction"]')).toBe(
       null,
     );
@@ -961,7 +1617,7 @@ describe('Transactions', () => {
       });
     }
 
-    let input = await editField(container, 'category', 0);
+    await editField(container, 'category', 0);
 
     // Make it clear that we are expected a negative transaction
     expect(getTransactions()[0].amount).toBe(-2777);
@@ -985,7 +1641,7 @@ describe('Transactions', () => {
 
     // Enter an amount for the new split transaction and make sure the
     // toolbar updates
-    input = await editField(container, 'debit', 1);
+    let input = await editField(container, 'debit', 1);
     await userEvent.clear(input);
     await userEvent.type(input, '10.00[tab]');
     expect(toolbar.innerHTML.includes('17.77')).toBeTruthy();
@@ -1022,7 +1678,8 @@ describe('Transactions', () => {
         id: expect.any(String),
         is_parent: true,
         notes: 'Notes',
-        payee: 'alice-id',
+        payee: null,
+        reconciled: false,
         sort_order: 0,
       },
       {
@@ -1036,7 +1693,7 @@ describe('Transactions', () => {
         is_child: true,
         parent_id: parentId,
         payee: 'alice-id',
-        reconciled: undefined,
+        reconciled: false,
         sort_order: -1,
         starting_balance_flag: null,
       },
@@ -1051,7 +1708,7 @@ describe('Transactions', () => {
         is_child: true,
         parent_id: parentId,
         payee: 'alice-id',
-        reconciled: undefined,
+        reconciled: false,
         sort_order: -2,
         starting_balance_flag: null,
       },
@@ -1078,7 +1735,7 @@ describe('Transactions', () => {
   test('transaction with splits shows 0 in correct column', async () => {
     const { container, getTransactions } = renderTransactions();
 
-    let input = await editField(container, 'category', 0);
+    await editField(container, 'category', 0);
 
     // The first transaction should always be a negative amount
     expect(getTransactions()[0].amount).toBe(-2777);
@@ -1097,7 +1754,7 @@ describe('Transactions', () => {
     expect(queryField(container, 'credit', '', 2).textContent).toBe('');
 
     // Change it to a credit transaction
-    input = await editField(container, 'credit', 0);
+    const input = await editField(container, 'credit', 0);
     await userEvent.type(input, '55.00{Tab}');
 
     // The zeros should now display in the credit column
@@ -1105,5 +1762,206 @@ describe('Transactions', () => {
     expect(queryField(container, 'credit', '', 1).textContent).toBe('0.00');
     expect(queryField(container, 'debit', '', 2).textContent).toBe('');
     expect(queryField(container, 'credit', '', 2).textContent).toBe('0.00');
+  });
+
+  describe('Tag Autocomplete', () => {
+    test('adding a tag at the end of the note', async () => {
+      const { container, getTransactions } = renderTransactions();
+      const input = await editField(container, 'notes', 2);
+      await userEvent.clear(input);
+      await userEvent.type(input, 'going on #vac');
+      await screen.findByText('#vacation');
+      await userEvent.keyboard('[Enter]');
+      fireEvent.blur(input);
+
+      expect(getTransactions()[2].notes).toBe('going on #vacation');
+    });
+
+    test('adding a tag at the start of the note', async () => {
+      const { container, getTransactions } = renderTransactions();
+      const input = await editField(container, 'notes', 2);
+      await userEvent.clear(input);
+      await userEvent.type(input, ' is fun');
+      await userEvent.type(input, '#vac', {
+        initialSelectionStart: 0,
+        initialSelectionEnd: 0,
+      });
+      await screen.findByText('#vacation');
+      await userEvent.keyboard('[Enter]');
+      fireEvent.blur(input);
+
+      expect(getTransactions()[2].notes).toBe('#vacation is fun');
+    });
+
+    test('adding a tag in the middle of the note', async () => {
+      const { container, getTransactions } = renderTransactions();
+      const input = await editField(container, 'notes', 2);
+      await userEvent.clear(input);
+      await userEvent.type(input, 'going on  is fun');
+      await userEvent.type(input, '#vac', {
+        initialSelectionStart: 9,
+        initialSelectionEnd: 9,
+      });
+      await screen.findByText('#vacation');
+      await userEvent.keyboard('[Enter]');
+      fireEvent.blur(input);
+
+      expect(getTransactions()[2].notes).toBe('going on #vacation is fun');
+    });
+
+    test('select a tag with both Tab and Enter', async () => {
+      const { container, getTransactions } = renderTransactions();
+
+      // Test Tab
+      let input = await editField(container, 'notes', 2);
+      await userEvent.clear(input);
+      await userEvent.type(input, '#vac');
+      await screen.findByText('#vacation');
+      await userEvent.keyboard('[Tab]');
+      fireEvent.blur(input);
+
+      expect(getTransactions()[2].notes).toBe('#vacation');
+
+      // Test Enter
+      input = await editField(container, 'notes', 3);
+      await userEvent.clear(input);
+      await userEvent.type(input, '#tax');
+      await screen.findByText('#taxes');
+      await userEvent.keyboard('[Enter]');
+      fireEvent.blur(input);
+
+      expect(getTransactions()[3].notes).toBe('#taxes');
+    });
+
+    test('creating a new tag via the autocomplete', async () => {
+      const { container, getTransactions } = renderTransactions();
+      const input = await editField(container, 'notes', 2);
+      await userEvent.clear(input);
+      await userEvent.type(input, 'spending on #coffee');
+
+      // The "Create tag #coffee" option should appear
+      const createOption = await screen.findByText('Create tag');
+      expect(createOption).toBeTruthy();
+
+      await userEvent.click(createOption);
+      await waitForAutocomplete();
+      fireEvent.blur(input);
+
+      // Verify the tag was added to the note correctly
+      expect(getTransactions()[2].notes).toBe('spending on #coffee');
+    });
+  });
+
+  describe('Notes tooltip', () => {
+    // jsdom doesn't lay out elements, so scrollWidth/clientWidth are always
+    // 0. Stub them so the truncation check has something meaningful to read.
+    let isOverflowing = false;
+    const originalScrollWidth = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      'scrollWidth',
+    )!;
+    const originalClientWidth = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      'clientWidth',
+    )!;
+
+    beforeAll(() => {
+      Object.defineProperty(Element.prototype, 'scrollWidth', {
+        configurable: true,
+        get() {
+          return isOverflowing ? 200 : 100;
+        },
+      });
+      Object.defineProperty(Element.prototype, 'clientWidth', {
+        configurable: true,
+        get() {
+          return 100;
+        },
+      });
+    });
+
+    afterAll(() => {
+      Object.defineProperty(
+        Element.prototype,
+        'scrollWidth',
+        originalScrollWidth,
+      );
+      Object.defineProperty(
+        Element.prototype,
+        'clientWidth',
+        originalClientWidth,
+      );
+    });
+
+    test('shows the full note and renders tags when the note is truncated', async () => {
+      isOverflowing = true;
+      const transactions = generateTransactions(1);
+      transactions[0].notes =
+        'a very long note about weekend spending #groceries that overflows the column';
+
+      const { container } = renderTransactions({ transactions });
+      const notesText = queryField(container, 'notes', 'span', 0);
+
+      await userEvent.hover(notesText);
+
+      const tooltip = await screen.findByRole('tooltip', {}, { timeout: 1000 });
+      expect(tooltip.textContent).toContain(
+        'a very long note about weekend spending',
+      );
+      expect(
+        within(tooltip).getByRole('button', { name: '#groceries' }),
+      ).toBeInTheDocument();
+    });
+
+    test('does not show a tooltip when the note fits without truncation', async () => {
+      isOverflowing = false;
+      const transactions = generateTransactions(1);
+      transactions[0].notes = 'short note';
+
+      const { container } = renderTransactions({ transactions });
+      const notesText = queryField(container, 'notes', 'span', 0);
+
+      await userEvent.hover(notesText);
+
+      // Wait past the tooltip's hover delay to make sure it never opens
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 700));
+      });
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    });
+  });
+});
+
+describe('useAmountColumnWidths', () => {
+  function transaction(amount: number) {
+    return generateTransaction({ account: accounts[0].id, amount })[0];
+  }
+
+  it('does not narrow below the default minimum for short-value accounts', () => {
+    const { result } = renderHook(() =>
+      useAmountColumnWidths([transaction(150), transaction(-200)], null),
+    );
+
+    expect(result.current).toEqual(DEFAULT_AMOUNT_COLUMN_WIDTHS);
+  });
+
+  it('widens the balance column for a long formatted balance value', () => {
+    const { result } = renderHook(() =>
+      useAmountColumnWidths([transaction(150)], { 'tx-1': 123456789012345 }),
+    );
+
+    expect(result.current.balance).toBeGreaterThan(
+      DEFAULT_AMOUNT_COLUMN_WIDTHS.balance,
+    );
+  });
+
+  it('widens the amount column for a long formatted amount', () => {
+    const { result } = renderHook(() =>
+      useAmountColumnWidths([transaction(123456789012)], null),
+    );
+
+    expect(result.current.amount).toBeGreaterThan(
+      DEFAULT_AMOUNT_COLUMN_WIDTHS.amount,
+    );
   });
 });

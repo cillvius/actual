@@ -1,24 +1,28 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 
-import { isNonProductionEnvironment } from 'loot-core/src/shared/environment';
-import type { DarkTheme, Theme } from 'loot-core/src/types/prefs';
+import darkThemeCss from '@actual-app/components/themes/dark.css?inline';
+import lightThemeCss from '@actual-app/components/themes/light.css?inline';
+import midnightThemeCss from '@actual-app/components/themes/midnight.css?inline';
+import paletteCss from '@actual-app/components/themes/palette.css?inline';
+import sidebarRedesignLightCss from '@actual-app/components/themes/sidebar-redesign-light.css?inline';
+import type { DarkTheme, Theme } from '@actual-app/core/types/prefs';
 
-import { useGlobalPref } from '../hooks/useGlobalPref';
+import { useGlobalPref } from '#hooks/useGlobalPref';
 
-import * as darkTheme from './themes/dark';
-import * as developmentTheme from './themes/development';
-import * as lightTheme from './themes/light';
-import * as midnightTheme from './themes/midnight';
+import {
+  isBaseTheme,
+  migrateLegacyOverride,
+  parseInstalledTheme,
+  usesRedesignSidebarPalette,
+  validateThemeCssSafely,
+} from './customThemes';
 
 const themes = {
-  light: { name: 'Light', colors: lightTheme },
-  dark: { name: 'Dark', colors: darkTheme },
-  midnight: { name: 'Midnight', colors: midnightTheme },
-  auto: { name: 'System default', colors: darkTheme },
-  ...(isNonProductionEnvironment() && {
-    development: { name: 'Development', colors: developmentTheme },
-  }),
-};
+  light: { name: 'Light', colors: lightThemeCss },
+  dark: { name: 'Dark', colors: darkThemeCss },
+  midnight: { name: 'Midnight', colors: midnightThemeCss },
+  auto: { name: 'System default' },
+} as const;
 
 export const themeOptions = Object.entries(themes).map(
   ([key, { name }]) => [key, name] as [Theme, string],
@@ -40,262 +44,184 @@ export function usePreferredDarkTheme() {
   return [darkTheme, setDarkTheme] as const;
 }
 
+/**
+ * One-time migration: moves any legacy `overrideCss` field out of the
+ * installed theme JSON blobs and into the new `customCssOverride` global pref.
+ *
+ * TODO: remove this after v26.6.0 is released
+ */
+function useMigrateLegacyOverride() {
+  const [customCssOverride, setCustomCssOverride] =
+    useGlobalPref('customCssOverride');
+  const [installedCustomLightThemeJson, setInstalledCustomLightThemeJson] =
+    useGlobalPref('installedCustomLightTheme');
+  const [installedCustomDarkThemeJson, setInstalledCustomDarkThemeJson] =
+    useGlobalPref('installedCustomDarkTheme');
+
+  useEffect(() => {
+    const result = migrateLegacyOverride({
+      existingOverride: customCssOverride,
+      lightJson: installedCustomLightThemeJson,
+      darkJson: installedCustomDarkThemeJson,
+    });
+
+    if (!result) return;
+
+    setCustomCssOverride(result.override);
+    if (result.newLightJson !== installedCustomLightThemeJson) {
+      setInstalledCustomLightThemeJson(result.newLightJson);
+    }
+    if (result.newDarkJson !== installedCustomDarkThemeJson) {
+      setInstalledCustomDarkThemeJson(result.newDarkJson);
+    }
+    // Re-runs when prefs hydrate so migration isn't missed if the installed
+    // theme JSONs arrive after the first render. migrateLegacyOverride is
+    // idempotent: once customCssOverride is set (or the legacy field is
+    // stripped), subsequent invocations return null.
+  }, [
+    customCssOverride,
+    installedCustomLightThemeJson,
+    installedCustomDarkThemeJson,
+    setCustomCssOverride,
+    setInstalledCustomLightThemeJson,
+    setInstalledCustomDarkThemeJson,
+  ]);
+}
+
+function getBaseThemeColors(baseTheme: string | undefined) {
+  // Theme prefs are untrusted strings; unknown values resolve to undefined.
+  return baseTheme !== undefined && isBaseTheme(baseTheme)
+    ? themes[baseTheme].colors
+    : undefined;
+}
+
 export function ThemeStyle() {
   const [activeTheme] = useTheme();
   const [darkThemePreference] = usePreferredDarkTheme();
-  const [themeColors, setThemeColors] = useState<
-    | typeof lightTheme
-    | typeof darkTheme
-    | typeof midnightTheme
-    | typeof developmentTheme
-    | undefined
-  >(undefined);
+  const [installedCustomLightThemeJson] = useGlobalPref(
+    'installedCustomLightTheme',
+  );
+  const [installedCustomDarkThemeJson] = useGlobalPref(
+    'installedCustomDarkTheme',
+  );
 
-  useEffect(() => {
-    if (activeTheme === 'auto') {
-      const darkTheme = themes[darkThemePreference];
+  const [customCssOverride] = useGlobalPref('customCssOverride');
 
-      function darkThemeMediaQueryListener(event: MediaQueryListEvent) {
-        if (event.matches) {
-          setThemeColors(darkTheme.colors);
-        } else {
-          setThemeColors(themes['light'].colors);
-        }
-      }
-      const darkThemeMediaQuery = window.matchMedia(
-        '(prefers-color-scheme: dark)',
-      );
-
-      darkThemeMediaQuery.addEventListener(
-        'change',
-        darkThemeMediaQueryListener,
-      );
-
-      if (darkThemeMediaQuery.matches) {
-        setThemeColors(darkTheme.colors);
-      } else {
-        setThemeColors(themes['light'].colors);
-      }
-
-      return () => {
-        darkThemeMediaQuery.removeEventListener(
-          'change',
-          darkThemeMediaQueryListener,
-        );
-      };
-    } else {
-      setThemeColors(themes[activeTheme]?.colors);
-    }
-  }, [activeTheme, darkThemePreference]);
+  // Rendered rather than injected from an effect so the CSS variables exist
+  // in the same commit as any consumer effect that reads them.
+  const customLightTheme = parseInstalledTheme(installedCustomLightThemeJson);
+  const themeColors =
+    getBaseThemeColors(customLightTheme?.baseTheme) ??
+    getBaseThemeColors(activeTheme === 'auto' ? 'light' : activeTheme);
 
   if (!themeColors) return null;
 
-  const css = Object.entries(themeColors)
-    .map(([key, value]) => `  --color-${key}: ${value};`)
-    .join('\n');
-  return <style>{`:root {\n${css}}`}</style>;
+  const sidebarRedesignCss =
+    themeColors === themes.light.colors &&
+    usesRedesignSidebarPalette(
+      [customLightTheme?.cssContent, customCssOverride]
+        .map(css => validateThemeCssSafely(css))
+        .join('\n'),
+    )
+      ? sidebarRedesignLightCss
+      : null;
+
+  if (activeTheme !== 'auto') {
+    return (
+      <>
+        <style>{paletteCss}</style>
+        <style>{themeColors}</style>
+        {sidebarRedesignCss != null && <style>{sidebarRedesignCss}</style>}
+      </>
+    );
+  }
+
+  // Let the browser pick the sheet so system theme changes need no re-render.
+  const darkColors =
+    getBaseThemeColors(
+      parseInstalledTheme(installedCustomDarkThemeJson)?.baseTheme,
+    ) ??
+    getBaseThemeColors(darkThemePreference) ??
+    themes.dark.colors;
+
+  return (
+    <>
+      <style>{paletteCss}</style>
+      <style media="(prefers-color-scheme: light)">{themeColors}</style>
+      {sidebarRedesignCss != null && (
+        <style media="(prefers-color-scheme: light)">
+          {sidebarRedesignCss}
+        </style>
+      )}
+      <style media="(prefers-color-scheme: dark)">{darkColors}</style>
+    </>
+  );
 }
 
-export const theme = {
-  pageBackground: 'var(--color-pageBackground)',
-  pageBackgroundModalActive: 'var(--color-pageBackgroundModalActive)',
-  pageBackgroundTopLeft: 'var(--color-pageBackgroundTopLeft)',
-  pageBackgroundBottomRight: 'var(--color-pageBackgroundBottomRight)',
-  pageBackgroundLineTop: 'var(--color-pageBackgroundLineTop)',
-  pageBackgroundLineMid: 'var(--color-pageBackgroundLineMid)',
-  pageBackgroundLineBottom: 'var(--color-pageBackgroundLineBottom)',
-  pageText: 'var(--color-pageText)',
-  pageTextLight: 'var(--color-pageTextLight)',
-  pageTextSubdued: 'var(--color-pageTextSubdued)',
-  pageTextDark: 'var(--color-pageTextDark)',
-  pageTextPositive: 'var(--color-pageTextPositive)',
-  pageTextLink: 'var(--color-pageTextLink)',
-  pageTextLinkLight: 'var(--color-pageTextLinkLight)',
-  cardBackground: 'var(--color-cardBackground)',
-  cardBorder: 'var(--color-cardBorder)',
-  cardShadow: 'var(--color-cardShadow)',
-  tableBackground: 'var(--color-tableBackground)',
-  tableRowBackgroundHover: 'var(--color-tableRowBackgroundHover)',
-  tableText: 'var(--color-tableText)',
-  tableTextLight: 'var(--color-tableTextLight)',
-  tableTextSubdued: 'var(--color-tableTextSubdued)',
-  tableTextSelected: 'var(--color-tableTextSelected)',
-  tableTextHover: 'var(--color-tableTextHover)',
-  tableTextInactive: 'var(--color-tableTextInactive)',
-  tableHeaderText: 'var(--color-tableHeaderText)',
-  tableHeaderBackground: 'var(--color-tableHeaderBackground)',
-  tableBorder: 'var(--color-tableBorder)',
-  tableBorderSelected: 'var(--color-tableBorderSelected)',
-  tableBorderHover: 'var(--color-tableBorderHover)',
-  tableBorderSeparator: 'var(--color-tableBorderSeparator)',
-  tableRowBackgroundHighlight: 'var(--color-tableRowBackgroundHighlight)',
-  tableRowBackgroundHighlightText:
-    'var(--color-tableRowBackgroundHighlightText)',
-  tableRowHeaderBackground: 'var(--color-tableRowHeaderBackground)',
-  tableRowHeaderText: 'var(--color-tableRowHeaderText)',
-  sidebarBackground: 'var(--color-sidebarBackground)',
-  sidebarItemBackgroundPending: 'var(--color-sidebarItemBackgroundPending)',
-  sidebarItemBackgroundPositive: 'var(--color-sidebarItemBackgroundPositive)',
-  sidebarItemBackgroundFailed: 'var(--color-sidebarItemBackgroundFailed)',
-  sidebarItemAccentSelected: 'var(--color-sidebarItemAccentSelected)',
-  sidebarItemBackgroundHover: 'var(--color-sidebarItemBackgroundHover)',
-  sidebarItemText: 'var(--color-sidebarItemText)',
-  sidebarItemTextSelected: 'var(--color-sidebarItemTextSelected)',
-  menuBackground: 'var(--color-menuBackground)',
-  menuItemBackground: 'var(--color-menuItemBackground)',
-  menuItemBackgroundHover: 'var(--color-menuItemBackgroundHover)',
-  menuItemText: 'var(--color-menuItemText)',
-  menuItemTextHover: 'var(--color-menuItemTextHover)',
-  menuItemTextSelected: 'var(--color-menuItemTextSelected)',
-  menuItemTextHeader: 'var(--color-menuItemTextHeader)',
-  menuBorder: 'var(--color-menuBorder)',
-  menuBorderHover: 'var(--color-menuBorderHover)',
-  menuKeybindingText: 'var(--color-menuKeybindingText)',
-  menuAutoCompleteBackground: 'var(--color-menuAutoCompleteBackground)',
-  menuAutoCompleteBackgroundHover:
-    'var(--color-menuAutoCompleteBackgroundHover)',
-  menuAutoCompleteText: 'var(--color-menuAutoCompleteText)',
-  menuAutoCompleteTextHover: 'var(--color-menuAutoCompleteTextHover)',
-  menuAutoCompleteTextHeader: 'var(--color-menuAutoCompleteTextHeader)',
-  menuAutoCompleteItemTextHover: 'var(--color-menuAutoCompleteItemTextHover)',
-  menuAutoCompleteItemText: 'var(--color-menuAutoCompleteItemText)',
-  modalBackground: 'var(--color-modalBackground)',
-  modalBorder: 'var(--color-modalBorder)',
-  mobileHeaderBackground: 'var(--color-mobileHeaderBackground)',
-  mobileHeaderText: 'var(--color-mobileHeaderText)',
-  mobileHeaderTextSubdued: 'var(--color-mobileHeaderTextSubdued)',
-  mobileHeaderTextHover: 'var(--color-mobileHeaderTextHover)',
-  mobilePageBackground: 'var(--color-mobilePageBackground)',
-  mobileNavBackground: 'var(--color-mobileNavBackground)',
-  mobileNavItem: 'var(--color-mobileNavItem)',
-  mobileNavItemSelected: 'var(--color-mobileNavItemSelected)',
-  mobileAccountShadow: 'var(--color-mobileAccountShadow)',
-  mobileAccountText: 'var(--color-mobileAccountText)',
-  mobileTransactionSelected: 'var(--color-mobileTransactionSelected)',
-  mobileViewTheme: 'var(--color-mobileViewTheme)',
-  mobileConfigServerViewTheme: 'var(--color-mobileConfigServerViewTheme)',
-  markdownNormal: 'var(--color-markdownNormal)',
-  markdownDark: 'var(--color-markdownDark)',
-  markdownLight: 'var(--color-markdownLight)',
-  buttonMenuText: 'var(--color-buttonMenuText)',
-  buttonMenuTextHover: 'var(--color-buttonMenuTextHover)',
-  buttonMenuBackground: 'var(--color-buttonMenuBackground)',
-  buttonMenuBackgroundHover: 'var(--color-buttonMenuBackgroundHover)',
-  buttonMenuBorder: 'var(--color-buttonMenuBorder)',
-  buttonMenuSelectedText: 'var(--color-buttonMenuSelectedText)',
-  buttonMenuSelectedTextHover: 'var(--color-buttonMenuSelectedTextHover)',
-  buttonMenuSelectedBackground: 'var(--color-buttonMenuSelectedBackground)',
-  buttonMenuSelectedBackgroundHover:
-    'var(--color-buttonMenuSelectedBackgroundHover)',
-  buttonMenuSelectedBorder: 'var(--color-buttonMenuSelectedBorder)',
-  buttonPrimaryText: 'var(--color-buttonPrimaryText)',
-  buttonPrimaryTextHover: 'var(--color-buttonPrimaryTextHover)',
-  buttonPrimaryBackground: 'var(--color-buttonPrimaryBackground)',
-  buttonPrimaryBackgroundHover: 'var(--color-buttonPrimaryBackgroundHover)',
-  buttonPrimaryBorder: 'var(--color-buttonPrimaryBorder)',
-  buttonPrimaryShadow: 'var(--color-buttonPrimaryShadow)',
-  buttonPrimaryDisabledText: 'var(--color-buttonPrimaryDisabledText)',
-  buttonPrimaryDisabledBackground:
-    'var(--color-buttonPrimaryDisabledBackground)',
-  buttonPrimaryDisabledBorder: 'var(--color-buttonPrimaryDisabledBorder)',
-  buttonNormalText: 'var(--color-buttonNormalText)',
-  buttonNormalTextHover: 'var(--color-buttonNormalTextHover)',
-  buttonNormalBackground: 'var(--color-buttonNormalBackground)',
-  buttonNormalBackgroundHover: 'var(--color-buttonNormalBackgroundHover)',
-  buttonNormalBorder: 'var(--color-buttonNormalBorder)',
-  buttonNormalShadow: 'var(--color-buttonNormalShadow)',
-  buttonNormalSelectedText: 'var(--color-buttonNormalSelectedText)',
-  buttonNormalSelectedBackground: 'var(--color-buttonNormalSelectedBackground)',
-  buttonNormalDisabledText: 'var(--color-buttonNormalDisabledText)',
-  buttonNormalDisabledBackground: 'var(--color-buttonNormalDisabledBackground)',
-  buttonNormalDisabledBorder: 'var(--color-buttonNormalDisabledBorder)',
-  buttonBareText: 'var(--color-buttonBareText)',
-  buttonBareTextHover: 'var(--color-buttonBareTextHover)',
-  buttonBareBackground: 'var(--color-buttonBareBackground)',
-  buttonBareBackgroundHover: 'var(--color-buttonBareBackgroundHover)',
-  buttonBareBackgroundActive: 'var(--color-buttonBareBackgroundActive)',
-  buttonBareDisabledText: 'var(--color-buttonBareDisabledText)',
-  buttonBareDisabledBackground: 'var(--color-buttonBareDisabledBackground)',
-  calendarText: 'var(--color-calendarText)',
-  calendarBackground: 'var(--color-calendarBackground)',
-  calendarItemText: 'var(--color-calendarItemText)',
-  calendarItemBackground: 'var(--color-calendarItemBackground)',
-  calendarSelectedBackground: 'var(--color-calendarSelectedBackground)',
-  noticeBackground: 'var(--color-noticeBackground)',
-  noticeBackgroundLight: 'var(--color-noticeBackgroundLight)',
-  noticeBackgroundDark: 'var(--color-noticeBackgroundDark)',
-  noticeText: 'var(--color-noticeText)',
-  noticeTextLight: 'var(--color-noticeTextLight)',
-  noticeTextDark: 'var(--color-noticeTextDark)',
-  noticeTextMenu: 'var(--color-noticeTextMenu)',
-  noticeTextMenuHover: 'var(--color-noticeTextMenuHover)',
-  noticeBorder: 'var(--color-noticeBorder)',
-  warningBackground: 'var(--color-warningBackground)',
-  warningText: 'var(--color-warningText)',
-  warningTextLight: 'var(--color-warningTextLight)',
-  warningTextDark: 'var(--color-warningTextDark)',
-  warningBorder: 'var(--color-warningBorder)',
-  errorBackground: 'var(--color-errorBackground)',
-  errorText: 'var(--color-errorText)',
-  errorTextDark: 'var(--color-errorTextDark)',
-  errorTextDarker: 'var(--color-errorTextDarker)',
-  errorTextMenu: 'var(--color-errorTextMenu)',
-  errorBorder: 'var(--color-errorBorder)',
-  upcomingBackground: 'var(--color-upcomingBackground)',
-  upcomingText: 'var(--color-upcomingText)',
-  upcomingBorder: 'var(--color-upcomingBorder)',
-  formLabelText: 'var(--color-formLabelText)',
-  formLabelBackground: 'var(--color-formLabelBackground)',
-  formInputBackground: 'var(--color-formInputBackground)',
-  formInputBackgroundSelected: 'var(--color-formInputBackgroundSelected)',
-  formInputBackgroundSelection: 'var(--color-formInputBackgroundSelection)',
-  formInputBorder: 'var(--color-formInputBorder)',
-  formInputTextReadOnlySelection: 'var(--color-formInputTextReadOnlySelection)',
-  formInputBorderSelected: 'var(--color-formInputBorderSelected)',
-  formInputText: 'var(--color-formInputText)',
-  formInputTextSelected: 'var(--color-formInputTextSelected)',
-  formInputTextPlaceholder: 'var(--color-formInputTextPlaceholder)',
-  formInputTextPlaceholderSelected:
-    'var(--color-formInputTextPlaceholderSelected)',
-  formInputTextSelection: 'var(--color-formInputTextSelection)',
-  formInputShadowSelected: 'var(--color-formInputShadowSelected)',
-  formInputTextHighlight: 'var(--color-formInputTextHighlight)',
-  checkboxText: 'var(--color-checkboxText)',
-  checkboxBackgroundSelected: 'var(--color-checkboxBackgroundSelected)',
-  checkboxBorderSelected: 'var(--color-checkboxBorderSelected)',
-  checkboxShadowSelected: 'var(--color-checkboxShadowSelected)',
-  checkboxToggleBackground: 'var(--color-checkboxToggleBackground)',
-  checkboxToggleBackgroundSelected:
-    'var(--color-checkboxToggleBackgroundSelected)',
-  checkboxToggleDisabled: 'var(--color-checkboxToggleDisabled)',
-  pillBackground: 'var(--color-pillBackground)',
-  pillBackgroundLight: 'var(--color-pillBackgroundLight)',
-  pillText: 'var(--color-pillText)',
-  pillTextHighlighted: 'var(--color-pillTextHighlighted)',
-  pillBorder: 'var(--color-pillBorder)',
-  pillBorderDark: 'var(--color-pillBorderDark)',
-  pillBackgroundSelected: 'var(--color-pillBackgroundSelected)',
-  pillTextSelected: 'var(--color-pillTextSelected)',
-  pillBorderSelected: 'var(--color-pillBorderSelected)',
-  pillTextSubdued: 'var(--color-pillTextSubdued)',
-  reportsRed: 'var(--color-reportsRed)',
-  reportsBlue: 'var(--color-reportsBlue)',
-  reportsGreen: 'var(--color-reportsGreen)',
-  reportsGray: 'var(--color-reportsGray)',
-  reportsLabel: 'var(--color-reportsLabel)',
-  reportsInnerLabel: 'var(--color-reportsInnerLabel)',
-  noteTagBackground: 'var(--color-noteTagBackground)',
-  noteTagBackgroundHover: 'var(--color-noteTagBackgroundHover)',
-  noteTagText: 'var(--color-noteTagText)',
-  budgetOtherMonth: 'var(--color-budgetOtherMonth)',
-  budgetCurrentMonth: 'var(--color-budgetCurrentMonth)',
-  budgetHeaderOtherMonth: 'var(--color-budgetHeaderOtherMonth)',
-  budgetHeaderCurrentMonth: 'var(--color-budgetHeaderCurrentMonth)',
-  floatingActionBarBackground: 'var(--color-floatingActionBarBackground)',
-  floatingActionBarBorder: 'var(--color-floatingActionBarBorder)',
-  floatingActionBarText: 'var(--color-floatingActionBarText)',
-  tooltipText: 'var(--color-tooltipText)',
-  tooltipBackground: 'var(--color-tooltipBackground)',
-  tooltipBorder: 'var(--color-tooltipBorder)',
-  calendarCellBackground: 'var(--color-calendarCellBackground)',
-};
+/**
+ * CustomThemeStyle injects CSS from the installed custom theme (if any).
+ * This is rendered after ThemeStyle to allow custom themes to override base theme variables.
+ *
+ * When `theme === 'auto'`, separate custom themes can be set for light and dark modes,
+ * injected via @media (prefers-color-scheme) rules. Otherwise, a single custom theme applies.
+ */
+export function CustomThemeStyle() {
+  useMigrateLegacyOverride();
+  const [activeTheme] = useTheme();
+  const [installedCustomLightThemeJson] = useGlobalPref(
+    'installedCustomLightTheme',
+  );
+  const [installedCustomDarkThemeJson] = useGlobalPref(
+    'installedCustomDarkTheme',
+  );
+  const [customCssOverride] = useGlobalPref('customCssOverride');
+
+  const validatedCss = useMemo(() => {
+    const safeValidate = (css: string | undefined, errorLabel: string) =>
+      validateThemeCssSafely(css, error =>
+        console.error(errorLabel, { error }),
+      );
+
+    let baseCss = '';
+    if (activeTheme === 'auto') {
+      const lightCss = safeValidate(
+        parseInstalledTheme(installedCustomLightThemeJson)?.cssContent,
+        'Invalid custom light theme CSS',
+      );
+      if (lightCss) {
+        baseCss += `@media (prefers-color-scheme: light) { ${lightCss} }\n`;
+      }
+      const darkCss = safeValidate(
+        parseInstalledTheme(installedCustomDarkThemeJson)?.cssContent,
+        'Invalid custom dark theme CSS',
+      );
+      if (darkCss) {
+        baseCss += `@media (prefers-color-scheme: dark) { ${darkCss} }\n`;
+      }
+    } else {
+      baseCss = safeValidate(
+        parseInstalledTheme(installedCustomLightThemeJson)?.cssContent,
+        'Invalid custom theme CSS',
+      );
+    }
+
+    const overrideLayer = safeValidate(
+      customCssOverride,
+      'Invalid custom CSS override',
+    );
+
+    const combined = [baseCss, overrideLayer].filter(Boolean).join('\n');
+    return combined || null;
+  }, [
+    activeTheme,
+    installedCustomLightThemeJson,
+    installedCustomDarkThemeJson,
+    customCssOverride,
+  ]);
+
+  if (!validatedCss) {
+    return null;
+  }
+
+  return <style id="custom-theme-active">{validatedCss}</style>;
+}

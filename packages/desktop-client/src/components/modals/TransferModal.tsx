@@ -1,31 +1,26 @@
 import React, { useMemo, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { pushModal } from 'loot-core/client/actions';
-import { type CategoryEntity } from 'loot-core/types/models';
+import { Button } from '@actual-app/components/button';
+import { InitialFocus } from '@actual-app/components/initial-focus';
+import { styles } from '@actual-app/components/styles';
+import { View } from '@actual-app/components/view';
+import type { IntegerAmount } from '@actual-app/core/shared/util';
 
-import { useCategories } from '../../hooks/useCategories';
-import { useDispatch } from '../../redux';
-import { styles } from '../../style';
 import {
   addToBeBudgetedGroup,
   removeCategoriesFromGroups,
-} from '../budget/util';
-import { Button } from '../common/Button2';
-import { InitialFocus } from '../common/InitialFocus';
-import { Modal, ModalCloseButton, ModalHeader } from '../common/Modal';
-import { View } from '../common/View';
-import { FieldLabel, TapField } from '../mobile/MobileForms';
-import { AmountInput } from '../util/AmountInput';
+} from '#components/budget/util';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { FieldLabel, TapField } from '#components/mobile/MobileForms';
+import { AmountInput } from '#components/util/AmountInput';
+import { useCategories } from '#hooks/useCategories';
+import { useSyncedPref } from '#hooks/useSyncedPref';
+import { pushModal } from '#modals/modalsSlice';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
 
-type TransferModalProps = {
-  title: string;
-  categoryId?: CategoryEntity['id'];
-  month: string;
-  amount: number;
-  showToBeBudgeted: boolean;
-  onSubmit: (amount: number, toCategoryId: CategoryEntity['id']) => void;
-};
+type TransferModalProps = Extract<ModalType, { name: 'transfer' }>['options'];
 
 export function TransferModal({
   title,
@@ -36,8 +31,10 @@ export function TransferModal({
   onSubmit,
 }: TransferModalProps) {
   const { t } = useTranslation();
+  const [hideFraction] = useSyncedPref('hideFraction');
 
-  const { grouped: originalCategoryGroups } = useCategories();
+  const { data: { grouped: originalCategoryGroups } = { grouped: [] } } =
+    useCategories();
   const [categoryGroups, categories] = useMemo(() => {
     const expenseGroups = originalCategoryGroups.filter(g => !g.is_income);
     const categoryGroups = showToBeBudgeted
@@ -53,18 +50,23 @@ export function TransferModal({
     return [filteredCategoryGroups, filteredCategories];
   }, [categoryId, originalCategoryGroups, showToBeBudgeted]);
 
-  const [amount, setAmount] = useState<number>(0);
+  const [amount, setAmount] = useState<IntegerAmount>(initialAmount);
   const [toCategoryId, setToCategoryId] = useState<string | null>(null);
   const dispatch = useDispatch();
 
   const openCategoryModal = () => {
     dispatch(
-      pushModal('category-autocomplete', {
-        categoryGroups,
-        month,
-        showHiddenCategories: true,
-        onSelect: categoryId => {
-          setToCategoryId(categoryId);
+      pushModal({
+        modal: {
+          name: 'category-autocomplete',
+          options: {
+            categoryGroups,
+            month,
+            showHiddenCategories: true,
+            onSelect: categoryId => {
+              setToCategoryId(categoryId);
+            },
+          },
         },
       }),
     );
@@ -80,19 +82,19 @@ export function TransferModal({
 
   return (
     <Modal name="transfer">
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={title}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View>
             <View>
               <FieldLabel title={t('Transfer this amount:')} />
               <InitialFocus>
                 <AmountInput
-                  value={initialAmount}
-                  autoDecimals={true}
+                  value={amount}
+                  autoDecimals={String(hideFraction) !== 'true'}
                   style={{
                     marginLeft: styles.mobileEditingPadding,
                     marginRight: styles.mobileEditingPadding,
@@ -111,11 +113,7 @@ export function TransferModal({
             </View>
 
             <FieldLabel title="To:" />
-            <TapField
-              tabIndex={0}
-              value={toCategory?.name}
-              onClick={openCategoryModal}
-            />
+            <TapField value={toCategory?.name} onPress={openCategoryModal} />
 
             <View
               style={{
@@ -133,7 +131,7 @@ export function TransferModal({
                 }}
                 onPress={() => {
                   _onSubmit(amount, toCategoryId);
-                  close();
+                  state.close();
                 }}
               >
                 <Trans>Transfer</Trans>

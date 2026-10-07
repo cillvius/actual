@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { Input } from '../common/Input';
-import { Select } from '../common/Select';
+import { Input } from '@actual-app/components/input';
+import { Select } from '@actual-app/components/select';
 
 type CustomUpcomingLengthProps = {
   onChange: (value: string) => void;
@@ -22,15 +22,13 @@ export function CustomUpcomingLength({
     { value: 'year', label: t('Years') },
   ];
 
-  let timePeriod = [];
-  if (tempValue === 'custom') {
-    timePeriod = ['1', 'day'];
-  } else {
-    timePeriod = tempValue.split('-');
-  }
+  const timePeriod =
+    tempValue === 'custom' ? ['1', 'day'] : tempValue.split('-');
 
-  const [numValue, setNumValue] = useState(parseInt(timePeriod[0]));
-  const [unit, setUnit] = useState(timePeriod[1]);
+  const [numValue, setNumValue] = useState(
+    Number.parseInt(timePeriod[0], 10) || 1,
+  );
+  const [unit, setUnit] = useState(timePeriod[1] ?? 'day');
 
   useEffect(() => {
     onChange(`${numValue}-${unit}`);
@@ -45,7 +43,7 @@ export function CustomUpcomingLength({
         style={{ width: 40 }}
         type="number"
         min={1}
-        onChange={e => setNumValue(parseInt(e.target.value))}
+        onChangeValue={value => setNumValue(parseInt(value))}
         defaultValue={numValue || 1}
       />
       <Select

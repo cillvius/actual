@@ -1,17 +1,20 @@
 // @ts-strict-ignore
 import React, { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 
-import { send } from 'loot-core/src/platform/client/fetch';
-import { type Handlers } from 'loot-core/types/handlers';
+import { theme } from '@actual-app/components/theme';
+import { send } from '@actual-app/core/platform/client/connection';
+import { isElectron } from '@actual-app/core/shared/environment';
+import type { Handlers } from '@actual-app/core/types/handlers';
 
-import { useNavigate } from '../../../hooks/useNavigate';
-import { theme } from '../../../style';
 import {
   useSetLoginMethods,
   useSetMultiuserEnabled,
   useSetServerURL,
-} from '../../ServerContext';
+} from '#components/ServerContext';
+import { useNavigate } from '#hooks/useNavigate';
+import { useDispatch } from '#redux';
+import { loggedIn } from '#users/usersSlice';
 
 // There are two URLs that dance with each other: `/login` and
 // `/bootstrap`. Both of these URLs check the state of the the server
@@ -26,16 +29,19 @@ export function useBootstrapped(redirect = true) {
   const [checked, setChecked] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const dispatch = useDispatch();
   const setServerURL = useSetServerURL();
   const setMultiuserEnabled = useSetMultiuserEnabled();
   const setLoginMethods = useSetLoginMethods();
 
   useEffect(() => {
+    let isCancelled = false;
+
     async function run() {
       const ensure = url => {
         if (location.pathname !== url) {
           if (redirect) {
-            navigate(url);
+            void navigate(url);
           }
         } else {
           setChecked(true);
@@ -44,6 +50,9 @@ export function useBootstrapped(redirect = true) {
 
       const url = await send('get-server-url');
       const bootstrapped = await send('get-did-bootstrap');
+      if (isCancelled) {
+        return;
+      }
       if (url == null && !bootstrapped) {
         // A server hasn't been specified yet
         const serverURL = window.location.origin;
@@ -52,14 +61,36 @@ export function useBootstrapped(redirect = true) {
         > = await send('subscribe-needs-bootstrap', {
           url: serverURL,
         });
+        if (isCancelled) {
+          return;
+        }
 
         if ('error' in result || !result.hasServer) {
           console.log('error' in result && result.error);
-          navigate('/config-server');
+
+          const isTransientFailure =
+            'error' in result && result.error === 'network-failure';
+          if (isElectron() || isTransientFailure) {
+            void navigate('/config-server');
+            return;
+          }
+
+          await setServerURL(null, { validate: false });
+          if (isCancelled) {
+            return;
+          }
+          await dispatch(loggedIn());
+          if (isCancelled) {
+            return;
+          }
+          void navigate('/');
           return;
         }
 
         await setServerURL(serverURL, { validate: false });
+        if (isCancelled) {
+          return;
+        }
 
         setMultiuserEnabled(result.multiuser);
         setLoginMethods(result.availableLoginMethods);
@@ -73,9 +104,12 @@ export function useBootstrapped(redirect = true) {
         const result: Awaited<
           ReturnType<Handlers['subscribe-needs-bootstrap']>
         > = await send('subscribe-needs-bootstrap');
+        if (isCancelled) {
+          return;
+        }
 
         if ('error' in result) {
-          navigate('/error', { state: { error: result.error } });
+          void navigate('/error', { state: { error: result.error } });
         } else if (result.bootstrapped) {
           ensure(`/login`);
 
@@ -88,8 +122,20 @@ export function useBootstrapped(redirect = true) {
         }
       }
     }
-    run();
-  }, [location]);
+    void run();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    dispatch,
+    location,
+    navigate,
+    redirect,
+    setLoginMethods,
+    setMultiuserEnabled,
+    setServerURL,
+  ]);
 
   return { checked };
 }

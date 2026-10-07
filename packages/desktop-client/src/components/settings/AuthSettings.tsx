@@ -1,15 +1,16 @@
 import React from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { pushModal } from 'loot-core/client/actions';
+import { Button } from '@actual-app/components/button';
+import { Label } from '@actual-app/components/label';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
-import { useFeatureFlag } from '../../hooks/useFeatureFlag';
-import { useDispatch } from '../../redux';
-import { theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Label } from '../common/Label';
-import { Text } from '../common/Text';
-import { useMultiuserEnabled, useLoginMethod } from '../ServerContext';
+import { useLoginMethod, useMultiuserEnabled } from '#components/ServerContext';
+import { useSyncServerStatus } from '#hooks/useSyncServerStatus';
+import { pushModal } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
 
 import { Setting } from './UI';
 
@@ -19,9 +20,16 @@ export function AuthSettings() {
   const multiuserEnabled = useMultiuserEnabled();
   const loginMethod = useLoginMethod();
   const dispatch = useDispatch();
-  const openidAuthFeatureFlag = useFeatureFlag('openidAuth');
+  const serverStatus = useSyncServerStatus();
 
-  return openidAuthFeatureFlag === true ? (
+  // Hide the OpenID block entirely when no server is configured
+  if (serverStatus === 'no-server') {
+    return null;
+  }
+
+  const isOffline = serverStatus === 'offline';
+
+  return (
     <Setting
       primaryAction={
         <>
@@ -31,6 +39,15 @@ export function AuthSettings() {
               {loginMethod === 'openid' ? t('enabled') : t('disabled')}
             </label>
           </label>
+          {isOffline && (
+            <View>
+              <Text style={{ paddingTop: 5, color: theme.warningText }}>
+                <Trans>
+                  Server is offline. OpenID settings are unavailable.
+                </Trans>
+              </Text>
+            </View>
+          )}
           {loginMethod === 'password' && (
             <>
               <Button
@@ -39,15 +56,19 @@ export function AuthSettings() {
                   marginTop: '10px',
                 }}
                 variant="normal"
+                isDisabled={isOffline}
                 onPress={() =>
                   dispatch(
-                    pushModal('enable-openid', {
-                      onSave: async () => {},
+                    pushModal({
+                      modal: {
+                        name: 'enable-openid',
+                        options: {},
+                      },
                     }),
                   )
                 }
               >
-                Start using OpenID
+                <Trans>Start using OpenID</Trans>
               </Button>
               <Label
                 style={{ paddingTop: 5 }}
@@ -62,10 +83,14 @@ export function AuthSettings() {
                   marginTop: '10px',
                 }}
                 variant="normal"
+                isDisabled={isOffline}
                 onPress={() =>
                   dispatch(
-                    pushModal('enable-password-auth', {
-                      onSave: async () => {},
+                    pushModal({
+                      modal: {
+                        name: 'enable-password-auth',
+                        options: {},
+                      },
                     }),
                   )
                 }
@@ -73,11 +98,11 @@ export function AuthSettings() {
                 <Trans>Disable OpenID</Trans>
               </Button>
               {multiuserEnabled && (
-                <label style={{ paddingTop: 5, color: theme.errorText }}>
+                <Text style={{ paddingTop: 5, color: theme.errorText }}>
                   <Trans>
                     Disabling OpenID will deactivate multi-user mode.
                   </Trans>
-                </label>
+                </Text>
               )}
             </>
           )}
@@ -91,5 +116,5 @@ export function AuthSettings() {
         </Trans>
       </Text>
     </Setting>
-  ) : null;
+  );
 }

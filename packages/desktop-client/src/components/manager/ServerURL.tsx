@@ -1,10 +1,11 @@
 import React from 'react';
 import { Trans } from 'react-i18next';
 
-import { Link } from '../common/Link';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { useServerURL } from '../ServerContext';
+import { Text } from '@actual-app/components/text';
+import { View } from '@actual-app/components/view';
+
+import { Link } from '#components/common/Link';
+import { useServerURL } from '#components/ServerContext';
 
 export function ServerURL() {
   const url = useServerURL();
@@ -18,7 +19,7 @@ export function ServerURL() {
         right: 0,
         justifyContent: 'center',
         flexDirection: 'row',
-        marginBottom: 15,
+        marginBottom: 'calc(15px + env(safe-area-inset-bottom))',
         zIndex: 5000,
       }}
     >
@@ -28,13 +29,11 @@ export function ServerURL() {
             Using server: <strong>{url}</strong>
           </Trans>
         ) : (
-          <Trans>
-            <strong>No server configured</strong>
-          </Trans>
+          <Trans>Using this device only</Trans>
         )}
       </Text>
       <Link variant="internal" to="/config-server" style={{ marginLeft: 15 }}>
-        <Trans>Change</Trans>
+        {url ? <Trans>Change</Trans> : <Trans>Set up sync</Trans>}
       </Link>
     </View>
   );

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Trans } from 'react-i18next';
 
-import { Text } from '../common/Text';
+import { Text } from '@actual-app/components/text';
 
 import { Setting } from './UI';
 
@@ -20,7 +20,7 @@ export function Backups() {
             Backups are taken every {{ BACKUP_FREQUENCY_MINS }} minutes and
             stored in{' '}
             <strong>
-              <i>Actual’s data directory</i>
+              <i>Actual's data directory</i>
             </strong>
             . Actual retains a maximum of {{ MAX_BACKUPS }} backups at any time.
           </Trans>

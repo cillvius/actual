@@ -1,28 +1,31 @@
 // @ts-strict-ignore
-import React, { type FormEvent, useState, type CSSProperties } from 'react';
+import React, { useState } from 'react';
+import type { CSSProperties, FormEvent } from 'react';
 import { Form } from 'react-aria-components';
-import { useTranslation, Trans } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
-import { pushModal } from 'loot-core/client/actions';
-import { closeAccount } from 'loot-core/client/queries/queriesSlice';
-import { integerToCurrency } from 'loot-core/src/shared/util';
-import { type AccountEntity } from 'loot-core/src/types/models';
-import { type TransObjectLiteral } from 'loot-core/types/util';
+import { Button } from '@actual-app/components/button';
+import { FormError } from '@actual-app/components/form-error';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { Paragraph } from '@actual-app/components/paragraph';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { integerToCurrency } from '@actual-app/core/shared/util';
+import type { AccountEntity } from '@actual-app/core/types/models';
+import type { TransObjectLiteral } from '@actual-app/core/types/util';
 
-import { useAccounts } from '../../hooks/useAccounts';
-import { useCategories } from '../../hooks/useCategories';
-import { useDispatch } from '../../redux';
-import { styles, theme } from '../../style';
-import { AccountAutocomplete } from '../autocomplete/AccountAutocomplete';
-import { CategoryAutocomplete } from '../autocomplete/CategoryAutocomplete';
-import { Button } from '../common/Button2';
-import { FormError } from '../common/FormError';
-import { Link } from '../common/Link';
-import { Modal, ModalCloseButton, ModalHeader } from '../common/Modal';
-import { Paragraph } from '../common/Paragraph';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { useResponsive } from '../responsive/ResponsiveProvider';
+import { useCloseAccountMutation } from '#accounts';
+import { AccountAutocomplete } from '#components/autocomplete/AccountAutocomplete';
+import { CategoryAutocomplete } from '#components/autocomplete/CategoryAutocomplete';
+import { Link } from '#components/common/Link';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { useAccounts } from '#hooks/useAccounts';
+import { useCategories } from '#hooks/useCategories';
+import { pushModal } from '#modals/modalsSlice';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
 
 function needsCategory(
   account: AccountEntity,
@@ -37,11 +40,10 @@ function needsCategory(
   return account.offbudget === 0 && isOffBudget;
 }
 
-type CloseAccountModalProps = {
-  account: AccountEntity;
-  balance: number;
-  canDelete: boolean;
-};
+type CloseAccountModalProps = Extract<
+  ModalType,
+  { name: 'close-account' }
+>['options'];
 
 export function CloseAccountModal({
   account,
@@ -49,8 +51,14 @@ export function CloseAccountModal({
   canDelete,
 }: CloseAccountModalProps) {
   const { t } = useTranslation(); // Initialize translation hook
-  const accounts = useAccounts().filter(a => a.closed === 0);
-  const { grouped: categoryGroups, list: categories } = useCategories();
+  const { data: allAccounts = [] } = useAccounts();
+  const accounts = allAccounts.filter(a => a.closed === 0);
+  const {
+    data: { grouped: categoryGroups, list: categories } = {
+      grouped: [],
+      list: [],
+    },
+  } = useCategories();
   const [loading, setLoading] = useState(false);
   const [transferAccountId, setTransferAccountId] = useState('');
   const transferAccount = accounts.find(a => a.id === transferAccountId);
@@ -84,27 +92,31 @@ export function CloseAccountModal({
       }
     : {};
 
+  const closeAccount = useCloseAccountMutation();
+
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    const transferError = balance !== 0 && transferAccountId === '';
+    const transferError = balance !== 0 && !transferAccountId;
     setTransferError(transferError);
 
     const categoryError =
-      needsCategory(account, transferAccountId, accounts) && categoryId === '';
+      needsCategory(account, transferAccountId, accounts) && !categoryId;
     setCategoryError(categoryError);
 
-    if (!transferError && !categoryError) {
-      setLoading(true);
-
-      dispatch(
-        closeAccount({
-          id: account.id,
-          transferAccountId: transferAccountId || null,
-          categoryId: categoryId || null,
-        }),
-      );
+    if (transferError || categoryError) {
+      return false;
     }
+
+    setLoading(true);
+
+    closeAccount.mutate({
+      id: account.id,
+      transferAccountId: transferAccountId || null,
+      categoryId: categoryId || null,
+    });
+
+    return true;
   };
 
   return (
@@ -113,11 +125,11 @@ export function CloseAccountModal({
       isLoading={loading}
       containerProps={{ style: { width: '30vw' } }}
     >
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={t('Close Account')}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View>
             <Paragraph>
@@ -138,7 +150,7 @@ export function CloseAccountModal({
               ) : (
                 <span>
                   <Trans>
-                    This account has transactions so we can’t permanently delete
+                    This account has transactions so we can't permanently delete
                     it.
                   </Trans>
                 </span>
@@ -146,8 +158,9 @@ export function CloseAccountModal({
             </Paragraph>
             <Form
               onSubmit={e => {
-                onSubmit(e);
-                close();
+                if (onSubmit(e)) {
+                  state.close();
+                }
               }}
             >
               {balance !== 0 && (
@@ -170,6 +183,7 @@ export function CloseAccountModal({
                   <View style={{ marginBottom: 15 }}>
                     <AccountAutocomplete
                       includeClosedAccounts={false}
+                      hiddenAccounts={[account.id]}
                       value={transferAccountId}
                       inputProps={{
                         placeholder: t('Select account...'),
@@ -181,9 +195,15 @@ export function CloseAccountModal({
                           },
                           onClick: () => {
                             dispatch(
-                              pushModal('account-autocomplete', {
-                                includeClosedAccounts: false,
-                                onSelect: onSelectAccount,
+                              pushModal({
+                                modal: {
+                                  name: 'account-autocomplete',
+                                  options: {
+                                    includeClosedAccounts: false,
+                                    hiddenAccounts: [account.id],
+                                    onSelect: onSelectAccount,
+                                  },
+                                },
                               }),
                             );
                           },
@@ -221,10 +241,15 @@ export function CloseAccountModal({
                             },
                             onClick: () => {
                               dispatch(
-                                pushModal('category-autocomplete', {
-                                  categoryGroups,
-                                  showHiddenCategories: true,
-                                  onSelect: onSelectCategory,
+                                pushModal({
+                                  modal: {
+                                    name: 'category-autocomplete',
+                                    options: {
+                                      categoryGroups,
+                                      showHiddenCategories: true,
+                                      onSelect: onSelectCategory,
+                                    },
+                                  },
                                 }),
                               );
                             },
@@ -245,20 +270,18 @@ export function CloseAccountModal({
 
               {!canDelete && (
                 <View style={{ marginBottom: 15 }}>
-                  <Text style={{ fontSize: 12 }}>
+                  <Text size="small">
                     <Trans>
                       You can also{' '}
                       <Link
                         variant="text"
                         onClick={() => {
                           setLoading(true);
-                          dispatch(
-                            closeAccount({
-                              id: account.id,
-                              forced: true,
-                            }),
-                          );
-                          close();
+                          closeAccount.mutate({
+                            id: account.id,
+                            forced: true,
+                          });
+                          state.close();
                         }}
                         style={{ color: theme.errorText }}
                       >
@@ -283,7 +306,7 @@ export function CloseAccountModal({
                     marginRight: 10,
                     height: isNarrowWidth ? styles.mobileMinHeight : undefined,
                   }}
-                  onPress={close}
+                  onPress={() => state.close()}
                 >
                   <Trans>Cancel</Trans>
                 </Button>

@@ -1,37 +1,37 @@
 // @ts-strict-ignore
-// This is a special usage of the API because this package is embedded
-// into Actual itself. We only want to pull in the methods in that
-// case and ignore everything else; otherwise we'd be pulling in the
-// entire backend bundle from the API
-import { send } from '@actual-app/api/injected';
-import * as actual from '@actual-app/api/methods';
-import { amountToInteger } from '@actual-app/api/utils';
-import AdmZip from 'adm-zip';
-import normalizePathSep from 'slash';
 import { v4 as uuidv4 } from 'uuid';
 
-import * as monthUtils from '../../shared/months';
-import { groupBy, sortByKey } from '../../shared/util';
+import { logger } from '#platform/server/log';
+import { send } from '#server/main-app';
+import { safeUnzip } from '#server/util/zip';
+import * as monthUtils from '#shared/months';
+import { amountToInteger, groupBy, sortByKey } from '#shared/util';
 
-import { YNAB4 } from './ynab4-types';
+import { runImportSteps } from './progress';
+import type { ImportTick } from './progress';
+import type * as YNAB4 from './ynab4-types';
 
 // Importer
 
 async function importAccounts(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   const accounts = sortByKey(data.accounts, 'sortableIndex');
 
   return Promise.all(
     accounts.map(async account => {
       if (!account.isTombstone) {
-        const id = await actual.createAccount({
-          name: account.accountName,
-          offbudget: account.onBudget ? false : true,
-          closed: account.hidden ? true : false,
+        const id = await send('api/account-create', {
+          account: {
+            name: account.accountName,
+            offbudget: account.onBudget ? false : true,
+            closed: account.hidden ? true : false,
+          },
         });
         entityIdMap.set(account.entityId, id);
+        tick();
       }
     }),
   );
@@ -40,6 +40,7 @@ async function importAccounts(
 async function importCategories(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   const masterCategories = sortByKey(data.masterCategories, 'sortableIndex');
 
@@ -51,13 +52,19 @@ async function importCategories(
         masterCategory.subCategories &&
         masterCategory.subCategories.some(cat => !cat.isTombstone)
       ) {
-        const id = await actual.createCategoryGroup({
-          name: masterCategory.name,
-          is_income: false,
+        const id = await send('api/category-group-create', {
+          group: {
+            name: masterCategory.name,
+            is_income: false,
+          },
         });
         entityIdMap.set(masterCategory.entityId, id);
+        tick();
         if (masterCategory.note) {
-          send('notes-save', { id, note: masterCategory.note });
+          void send('notes-save', {
+            id,
+            note: masterCategory.note,
+          });
         }
 
         if (masterCategory.subCategories) {
@@ -87,13 +94,19 @@ async function importCategories(
                 categoryName = categoryNameParts.join('/').trim();
               }
 
-              const id = await actual.createCategory({
-                name: categoryName,
-                group_id: entityIdMap.get(category.masterCategoryId),
+              const id = await send('api/category-create', {
+                category: {
+                  name: categoryName,
+                  group_id: entityIdMap.get(category.masterCategoryId),
+                },
               });
               entityIdMap.set(category.entityId, id);
+              tick();
               if (category.note) {
-                send('notes-save', { id, note: category.note });
+                void send('notes-save', {
+                  id,
+                  note: category.note,
+                });
               }
             }
           }
@@ -106,32 +119,36 @@ async function importCategories(
 async function importPayees(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   for (const payee of data.payees) {
     if (!payee.isTombstone) {
-      const id = await actual.createPayee({
-        name: payee.name,
-        category: entityIdMap.get(payee.autoFillCategoryId) || null,
-        transfer_acct: entityIdMap.get(payee.targetAccountId) || null,
+      const id = await send('api/payee-create', {
+        payee: {
+          name: payee.name,
+          transfer_acct: entityIdMap.get(payee.targetAccountId) || null,
+        },
       });
 
       // TODO: import payee rules
 
       entityIdMap.set(payee.entityId, id);
+      tick();
     }
   }
 }
 
-async function importTransactions(
+export async function importTransactions(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
-  const categories = await actual.getCategories();
+  const categories = await send('api/categories-get');
   const incomeCategoryId: string = categories.find(
     cat => cat.name === 'Income',
   ).id;
-  const accounts = await actual.getAccounts();
-  const payees = await actual.getPayees();
+  const accounts = await send('api/accounts-get');
+  const payees = await send('api/payees-get');
 
   function getCategory(id: string) {
     if (id == null || id === 'Category/__Split__') {
@@ -197,7 +214,7 @@ async function importTransactions(
 
             return {
               transfer_id: transferId,
-              payee,
+              ...(payee != null ? { payee } : {}),
               imported_payee,
             };
           }
@@ -218,24 +235,34 @@ async function importTransactions(
 
             subtransactions:
               transaction.subTransactions &&
-              transaction.subTransactions.map(t => {
-                return {
-                  id: entityIdMap.get(t.entityId),
-                  amount: amountToInteger(t.amount),
-                  category: getCategory(t.categoryId),
-                  notes: t.memo || null,
-                  ...transferProperties(t),
-                };
-              }),
+              transaction.subTransactions
+                .filter(st => !st.isTombstone)
+                .map(t => {
+                  return {
+                    id: entityIdMap.get(t.entityId),
+                    amount: amountToInteger(t.amount),
+                    category: getCategory(t.categoryId),
+                    notes: t.memo || null,
+                    ...transferProperties(t),
+                  };
+                }),
           };
 
           return newTransaction;
         })
         .filter(x => x);
 
-      await actual.addTransactions(entityIdMap.get(accountId), toImport, {
+      await send('api/transactions-add', {
+        accountId: entityIdMap.get(accountId),
+        transactions: toImport,
         learnCategories: true,
+        runTransfers: false,
       });
+      tick(
+        toImport.length,
+        data.accounts.find(account => account.entityId === accountId)
+          ?.accountName,
+      );
     }),
   );
 }
@@ -273,10 +300,12 @@ function fillInBudgets(
 async function importBudgets(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   const budgets = sortByKey(data.monthlyBudgets, 'month');
 
-  await actual.batchBudgetUpdates(async () => {
+  await send('api/batch-budget-start');
+  try {
     for (const budget of budgets) {
       const filled = fillInBudgets(
         data,
@@ -292,17 +321,32 @@ async function importBudgets(
             return;
           }
 
-          await actual.setBudgetAmount(month, catId, amount);
+          await send('api/budget-set-amount', {
+            month,
+            categoryId: catId,
+            amount,
+          });
 
           if (catBudget.overspendingHandling === 'AffectsBuffer') {
-            await actual.setBudgetCarryover(month, catId, false);
+            await send('api/budget-set-carryover', {
+              month,
+              categoryId: catId,
+              flag: false,
+            });
           } else if (catBudget.overspendingHandling === 'Confined') {
-            await actual.setBudgetCarryover(month, catId, true);
+            await send('api/budget-set-carryover', {
+              month,
+              categoryId: catId,
+              flag: true,
+            });
           }
         }),
       );
+      tick();
     }
-  });
+  } finally {
+    await send('api/batch-budget-end');
+  }
 }
 
 function estimateRecentness(str: string) {
@@ -316,15 +360,18 @@ function estimateRecentness(str: string) {
   }, 0);
 }
 
-function findLatestDevice(zipped: AdmZip, entries: AdmZip.IZipEntry[]): string {
+function findLatestDevice(
+  zipped: Record<string, Uint8Array>,
+  entries: string[],
+): string {
   let devices = entries
     .map(entry => {
-      const contents = zipped.readFile(entry).toString('utf8');
+      const contents = Buffer.from(zipped[entry]).toString('utf8');
 
       let data;
       try {
         data = JSON.parse(contents);
-      } catch (e) {
+      } catch {
         return null;
       }
 
@@ -347,26 +394,42 @@ function findLatestDevice(zipped: AdmZip, entries: AdmZip.IZipEntry[]): string {
 export async function doImport(data: YNAB4.YFull) {
   const entityIdMap = new Map<string, string>();
 
-  console.log('Importing Accounts...');
-  await importAccounts(data, entityIdMap);
-
-  console.log('Importing Categories...');
-  await importCategories(data, entityIdMap);
-
-  console.log('Importing Payees...');
-  await importPayees(data, entityIdMap);
-
-  console.log('Importing Transactions...');
-  await importTransactions(data, entityIdMap);
-
-  console.log('Importing Budgets...');
-  await importBudgets(data, entityIdMap);
-
-  console.log('Setting up...');
+  await runImportSteps([
+    {
+      step: 'accounts',
+      total: countLive(data.accounts),
+      run: tick => importAccounts(data, entityIdMap, tick),
+    },
+    {
+      step: 'categories',
+      total:
+        countLive(data.masterCategories) +
+        data.masterCategories.reduce(
+          (count, group) => count + countLive(group.subCategories ?? []),
+          0,
+        ),
+      run: tick => importCategories(data, entityIdMap, tick),
+    },
+    {
+      step: 'payees',
+      total: countLive(data.payees),
+      run: tick => importPayees(data, entityIdMap, tick),
+    },
+    {
+      step: 'transactions',
+      total: data.transactions.length,
+      run: tick => importTransactions(data, entityIdMap, tick),
+    },
+    {
+      step: 'budgets',
+      total: data.monthlyBudgets.length,
+      run: tick => importBudgets(data, entityIdMap, tick),
+    },
+  ]);
 }
 
 export function getBudgetName(filepath) {
-  let unixFilepath = normalizePathSep(filepath);
+  let unixFilepath = filepath.replace(/\\/g, '/');
 
   if (!/\.zip/.test(unixFilepath)) {
     return null;
@@ -384,8 +447,8 @@ export function getBudgetName(filepath) {
   return m[1];
 }
 
-function getFile(entries: AdmZip.IZipEntry[], path: string) {
-  const files = entries.filter(e => e.entryName === path);
+function getFile(entries: string[], path: string) {
+  const files = entries.filter(e => e === path);
   if (files.length === 0) {
     throw new Error('Could not find file: ' + path);
   }
@@ -405,36 +468,48 @@ function join(...paths: string[]): string {
 }
 
 export function parseFile(buffer: Buffer): YNAB4.YFull {
-  const zipped = new AdmZip(buffer);
-  const entries = zipped.getEntries();
+  let zipped: Record<string, Uint8Array>;
+  try {
+    zipped = safeUnzip(buffer);
+  } catch (e) {
+    logger.log(e);
+    throw new Error('Error reading zip file');
+  }
+  const entries = Object.keys(zipped);
 
   let root = '';
-  const dirMatch = entries[0].entryName.match(/([^/]*\.ynab4)/);
+  const dirMatch = entries[0].match(/([^/]*\.ynab4)/);
   if (dirMatch) {
     root = dirMatch[1] + '/';
   }
 
-  const metaStr = zipped.readFile(getFile(entries, root + 'Budget.ymeta'));
+  const metaStr = Buffer.from(zipped[getFile(entries, root + 'Budget.ymeta')]);
   const meta = JSON.parse(metaStr.toString('utf8'));
   const budgetPath = join(root, meta.relativeDataFolderName);
 
   const deviceFiles = entries.filter(e =>
-    e.entryName.startsWith(join(budgetPath, 'devices')),
+    e.startsWith(join(budgetPath, 'devices')),
   );
   const deviceGUID = findLatestDevice(zipped, deviceFiles);
 
   const yfullPath = join(budgetPath, deviceGUID, 'Budget.yfull');
   let contents;
   try {
-    contents = zipped.readFile(getFile(entries, yfullPath)).toString('utf8');
+    contents = Buffer.from(zipped[getFile(entries, yfullPath)]).toString(
+      'utf8',
+    );
   } catch (e) {
-    console.log(e);
+    logger.log(e);
     throw new Error('Error reading Budget.yfull file');
   }
 
   try {
     return JSON.parse(contents);
-  } catch (e) {
+  } catch {
     throw new Error('Error parsing Budget.yfull file');
   }
+}
+
+function countLive(entities: { isTombstone?: boolean }[]) {
+  return entities.filter(entity => !entity.isTombstone).length;
 }

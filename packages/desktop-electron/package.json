@@ -1,38 +1,62 @@
 {
   "name": "desktop-electron",
-  "author": "Actual",
-  "productName": "Actual",
+  "version": "26.10.0",
   "description": "A simple and powerful personal finance system",
-  "version": "25.1.0",
+  "author": "Actual",
+  "main": "build/desktop-electron/index.js",
   "scripts": {
     "clean": "rm -rf dist",
     "update-client": "bin/update-client",
     "build": "yarn build:dist && electron-builder",
-    "build:dist": "tsc --p tsconfig.dist.json && yarn copy-static-assets",
-    "copy-static-assets": "copyfiles --exclude 'build/**/*' **/*.html icons/**/* build",
-    "watch": "yarn build:dist && cross-env ACTUAL_DOCUMENT_DIR=\"../../data\" ACTUAL_DATA_DIR=\"../../data\" electron ."
+    "build:dist": "tsgo && yarn copy-static-assets",
+    "typecheck": "tsgo -b && tsc-strict",
+    "copy-static-assets": "copyfiles --exclude 'build/**/*' **/*.html icons/**/* build/desktop-electron",
+    "watch": "yarn build:dist && cross-env ACTUAL_DOCUMENT_DIR=\"../../data\" ACTUAL_DATA_DIR=\"../../data\" electron .",
+    "e2e": "npx playwright test"
   },
-  "main": "build/index.js",
+  "dependencies": {
+    "@actual-app/sync-server": "workspace:*",
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@actual-app/core": "workspace:*",
+    "@actual-app/web": "workspace:*",
+    "@electron/rebuild": "^4.0.3",
+    "@playwright/test": "1.61.1",
+    "@types/copyfiles": "^2",
+    "@typescript/native-preview": "beta",
+    "copyfiles": "^2.4.1",
+    "cross-env": "^10.1.0",
+    "electron": "43.5.0",
+    "electron-builder": "26.8.1",
+    "typescript-strict-plugin": "^2.4.4"
+  },
   "build": {
     "appId": "com.actualbudget.actual",
     "files": [
       "build",
-      "!node_modules/better-sqlite3/{benchmark,src,bin,docs,deps,build/Release/obj,build/Release/sqlite3.a,build/Release/test_extension.node}",
+      "!node_modules/@actual-app/web",
+      "node_modules/@actual-app/web/build",
+      "node_modules/@actual-app/web/package.json",
+      "!node_modules/better-sqlite3/{benchmark,src,bin,docs,deps,prebuilds,build/Release/obj,build/Release/sqlite3.a,build/Release/test_extension.node}",
       "!**/*.js.map",
       "!**/stats.json",
       "!build/client-build/sql-wasm.wasm",
       "!build/loot-core/lib-dist/electron/{browser,bundle.mobile*}"
     ],
-    "beforePack": "./build/beforePackHook.js",
+    "beforePack": "./build/desktop-electron/beforePackHook.js",
+    "afterSign": "./build/desktop-electron/afterSignHook.js",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": true,
+      "enableNodeCliInspectArguments": false
+    },
     "mac": {
       "category": "public.app-category.finance",
       "icon": "icons/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "artifactName": "${productName}-mac-${arch}.${ext}",
-      "notarize": {
-        "teamId": "79ANZ983YF"
-      },
       "target": [
         {
           "target": "dmg",
@@ -45,14 +69,35 @@
     },
     "linux": {
       "target": [
-        "flatpak",
-        "AppImage"
+        {
+          "target": "flatpak",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
-      "artifactName": "${productName}-linux.${ext}"
+      "artifactName": "${productName}-linux-${arch}.${ext}",
+      "extraResources": [
+        "extra-resources/linux"
+      ],
+      "desktop": {
+        "entry": {
+          "Categories": "Finance;Office",
+          "Keywords": "Budget;Finance;Money;Expenses;Savings;"
+        }
+      },
+      "executableName": "actual"
     },
     "flatpak": {
-      "runtimeVersion": "23.08",
-      "baseVersion": "23.08"
+      "runtimeVersion": "24.08",
+      "baseVersion": "24.08"
     },
     "win": {
       "target": [
@@ -73,7 +118,7 @@
           ]
         }
       ],
-      "icon": "icons/icon.ico",
+      "icon": "icons/icon.png",
       "artifactName": "${productName}-windows-${arch}.${ext}"
     },
     "appx": {
@@ -84,20 +129,5 @@
     },
     "npmRebuild": false
   },
-  "dependencies": {
-    "better-sqlite3": "^11.7.0",
-    "fs-extra": "^11.2.0",
-    "promise-retry": "^2.0.1"
-  },
-  "devDependencies": {
-    "@electron/notarize": "2.4.0",
-    "@electron/rebuild": "3.6.0",
-    "@types/copyfiles": "^2",
-    "@types/fs-extra": "^11",
-    "copyfiles": "^2.4.1",
-    "cross-env": "^7.0.3",
-    "electron": "30.0.6",
-    "electron-builder": "24.13.3",
-    "typescript": "^5.5.4"
-  }
+  "productName": "Actual"
 }

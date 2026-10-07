@@ -1,41 +1,18 @@
 import React, { useCallback, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { addNotification } from 'loot-core/client/actions';
+import { Button, ButtonWithLoading } from '@actual-app/components/button';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
-import { useGlobalPref } from '../../../hooks/useGlobalPref';
-import { useDispatch } from '../../../redux';
-import { theme, styles } from '../../../style';
-import { Information } from '../../alerts';
-import { Button, ButtonWithLoading } from '../../common/Button2';
-import { Modal, ModalCloseButton, ModalHeader } from '../../common/Modal';
-import { Text } from '../../common/Text';
-import { View } from '../../common/View';
-import { Checkbox } from '../../forms';
-
-function DirectoryDisplay({ directory }: { directory: string }) {
-  return (
-    <View style={{ flexDirection: 'row', gap: '0.5rem', width: '100%' }}>
-      <Text
-        title={directory}
-        style={{
-          backgroundColor: theme.pageBackground,
-          padding: '5px 10px',
-          borderRadius: 4,
-          overflow: 'auto',
-          whiteSpace: 'nowrap',
-          width: '100%',
-          ...styles.horizontalScrollbar,
-          '::-webkit-scrollbar': {
-            height: '8px',
-          },
-        }}
-      >
-        {directory}
-      </Text>
-    </View>
-  );
-}
+import { Information } from '#components/alerts';
+import { DirectoryDisplay } from '#components/common/DirectoryDisplay';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { Checkbox } from '#components/forms';
+import { useGlobalPref } from '#hooks/useGlobalPref';
+import { addNotification } from '#notifications/notificationsSlice';
+import { useDispatch } from '#redux';
 
 export function ConfirmChangeDocumentDirModal({
   currentBudgetDirectory,
@@ -74,8 +51,10 @@ export function ConfirmChangeDocumentDirModal({
 
       dispatch(
         addNotification({
-          type: 'message',
-          message: t('Actual’s data directory successfully changed.'),
+          notification: {
+            type: 'message',
+            message: t("Actual's data directory successfully changed."),
+          },
         }),
       );
       close();
@@ -93,11 +72,11 @@ export function ConfirmChangeDocumentDirModal({
 
   return (
     <Modal name="confirm-change-document-dir">
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={t('Are you sure?')}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View
             style={{
@@ -123,7 +102,7 @@ export function ConfirmChangeDocumentDirModal({
             >
               <Text>
                 <Trans>
-                  You are about to change Actual’s data directory from:
+                  You are about to change Actual's data directory from:
                 </Trans>
               </Text>
               <DirectoryDisplay directory={currentBudgetDirectory} />
@@ -161,7 +140,7 @@ export function ConfirmChangeDocumentDirModal({
               {!moveFiles && (
                 <Information style={{ padding: 0 }}>
                   <Trans>
-                    Your files won’t be moved. You can manually move them to the
+                    Your files won't be moved. You can manually move them to the
                     folder.
                   </Trans>
                 </Information>
@@ -183,7 +162,7 @@ export function ConfirmChangeDocumentDirModal({
                   fontSize: 14,
                   alignSelf: 'center',
                 }}
-                onPress={close}
+                onPress={() => state.close()}
               >
                 <Trans>Cancel</Trans>
               </Button>
@@ -195,7 +174,7 @@ export function ConfirmChangeDocumentDirModal({
                   fontSize: 14,
                   alignSelf: 'center',
                 }}
-                onPress={() => moveDirectory(close)}
+                onPress={() => moveDirectory(() => state.close())}
               >
                 <Trans>Change directory</Trans>
               </ButtonWithLoading>

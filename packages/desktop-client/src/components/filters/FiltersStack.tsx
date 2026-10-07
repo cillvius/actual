@@ -1,16 +1,15 @@
 import React from 'react';
 
-import { type TransactionFilterEntity } from 'loot-core/types/models';
-import { type RuleConditionEntity } from 'loot-core/types/models/rule';
-
-import { Stack } from '../common/Stack';
-import { View } from '../common/View';
+import { SpaceBetween } from '@actual-app/components/space-between';
+import { View } from '@actual-app/components/view';
+import type {
+  RuleConditionEntity,
+  TransactionFilterEntity,
+} from '@actual-app/core/types/models';
 
 import { AppliedFilters } from './AppliedFilters';
-import {
-  type SavedFilter,
-  SavedFilterMenuButton,
-} from './SavedFilterMenuButton';
+import { SavedFilterMenuButton } from './SavedFilterMenuButton';
+import type { SavedFilter } from './SavedFilterMenuButton';
 
 export function FiltersStack({
   conditions,
@@ -38,11 +37,10 @@ export function FiltersStack({
 }) {
   return (
     <View>
-      <Stack
-        spacing={2}
-        direction="row"
-        justify="flex-start"
-        align="flex-start"
+      <SpaceBetween
+        direction="horizontal"
+        gap={10}
+        style={{ justifyContent: 'flex-start', alignItems: 'flex-start' }}
       >
         <AppliedFilters
           conditions={conditions}
@@ -60,7 +58,7 @@ export function FiltersStack({
           onReloadSavedFilter={onReloadSavedFilter}
           savedFilters={savedFilters}
         />
-      </Stack>
+      </SpaceBetween>
     </View>
   );
 }

@@ -1,51 +1,33 @@
-// @ts-strict-ignore
-import React, {
-  useContext,
-  type CSSProperties,
-  type ComponentType,
-} from 'react';
+import React, { useContext } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
-import * as monthUtils from 'loot-core/src/shared/months';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import * as monthUtils from '@actual-app/core/shared/months';
 
-import { theme } from '../../style';
-import { View } from '../common/View';
-import { NamespaceContext } from '../spreadsheet/NamespaceContext';
+import { SheetNameProvider } from '#hooks/useSheetName';
 
 import { MonthsContext } from './MonthsContext';
 
 type RenderMonthsProps = {
-  component?: ComponentType<{ month: string; editing: boolean }>;
-  editingMonth?: string;
-  args?: object;
+  children: ReactNode | (({ month }: { month: string }) => ReactNode);
   style?: CSSProperties;
 };
 
-export function RenderMonths({
-  component: Component,
-  editingMonth,
-  args,
-  style,
-}: RenderMonthsProps) {
+export function RenderMonths({ children, style }: RenderMonthsProps) {
   const { months } = useContext(MonthsContext);
 
-  return months.map((month, index) => {
-    const editing = editingMonth === month;
-
-    return (
-      <NamespaceContext.Provider
-        key={index}
-        value={monthUtils.sheetForMonth(month)}
+  return months.map((month, index) => (
+    <SheetNameProvider key={index} name={monthUtils.sheetForMonth(month)}>
+      <View
+        style={{
+          flex: 1,
+          borderLeft: '1px solid ' + theme.tableBorder,
+          ...style,
+        }}
       >
-        <View
-          style={{
-            flex: 1,
-            borderLeft: '1px solid ' + theme.tableBorder,
-            ...style,
-          }}
-        >
-          <Component month={month} editing={editing} {...args} />
-        </View>
-      </NamespaceContext.Provider>
-    );
-  }) as unknown as JSX.Element;
+        {typeof children === 'function' ? children({ month }) : children}
+      </View>
+    </SheetNameProvider>
+  ));
 }

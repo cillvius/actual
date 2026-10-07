@@ -1,36 +1,40 @@
-import * as db from '../db';
-import { Schedule } from '../db/types';
+import * as db from '#server/db';
+import type { Template } from '#types/models/templates';
 
+import { parse } from './goal-template.pegjs';
 import {
-  CategoryWithTemplateNote,
   getActiveSchedules,
   getCategoriesWithTemplateNotes,
   resetCategoryGoalDefsWithNoTemplates,
 } from './statements';
-import { checkTemplates, storeTemplates } from './template-notes';
+import type { CategoryWithTemplateNote } from './statements';
+import {
+  checkTemplateNotes,
+  storeNoteTemplates,
+  unparse,
+} from './template-notes';
 
-jest.mock('../db');
-jest.mock('./statements');
+vi.mock('#server/db');
+vi.mock('./statements');
 
 function mockGetTemplateNotesForCategories(
   templateNotes: CategoryWithTemplateNote[],
 ) {
-  (getCategoriesWithTemplateNotes as jest.Mock).mockResolvedValue(
-    templateNotes,
-  );
+  vi.mocked(getCategoriesWithTemplateNotes).mockResolvedValue(templateNotes);
 }
 
-function mockGetActiveSchedules(schedules: Schedule[]) {
-  (getActiveSchedules as jest.Mock).mockResolvedValue(schedules);
+function mockGetActiveSchedules(schedules: db.DbSchedule[]) {
+  vi.mocked(getActiveSchedules).mockResolvedValue(schedules);
 }
 
 function mockDbUpdate() {
-  (db.update as jest.Mock).mockResolvedValue(undefined);
+  vi.mocked(db.updateWithSchema).mockResolvedValue(undefined);
 }
 
-describe('storeTemplates', () => {
+describe('storeNoteTemplates', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
+    vi.mocked(db.all).mockResolvedValue([]);
   });
 
   const testCases = [
@@ -105,7 +109,7 @@ describe('storeTemplates', () => {
       ],
       expectedTemplates: [
         {
-          type: 'simple',
+          type: 'goal',
           amount: 10,
           priority: null,
           directive: 'goal',
@@ -124,6 +128,92 @@ describe('storeTemplates', () => {
       ],
       expectedTemplates: [],
     },
+    {
+      description: 'Captures a description above a template',
+      mockTemplateNotes: [
+        {
+          id: 'cat1',
+          name: 'Category 1',
+          note: 'Car insurance\n#template 10',
+        },
+      ],
+      expectedTemplates: [
+        {
+          type: 'simple',
+          monthly: 10,
+          limit: null,
+          priority: 0,
+          directive: 'template',
+          description: 'Car insurance',
+        },
+      ],
+    },
+    {
+      description: 'Captures a multi-line description above a template',
+      mockTemplateNotes: [
+        {
+          id: 'cat1',
+          name: 'Category 1',
+          note: 'Line one\nLine two\n#template 10',
+        },
+      ],
+      expectedTemplates: [
+        {
+          type: 'simple',
+          monthly: 10,
+          limit: null,
+          priority: 0,
+          directive: 'template',
+          description: 'Line one\nLine two',
+        },
+      ],
+    },
+    {
+      description: 'Ignores prose separated from the template by a blank line',
+      mockTemplateNotes: [
+        {
+          id: 'cat1',
+          name: 'Category 1',
+          note: 'Just a note\n\n#template 10',
+        },
+      ],
+      expectedTemplates: [
+        {
+          type: 'simple',
+          monthly: 10,
+          limit: null,
+          priority: 0,
+          directive: 'template',
+        },
+      ],
+    },
+    {
+      description: 'Only attaches a description to the template directly below',
+      mockTemplateNotes: [
+        {
+          id: 'cat1',
+          name: 'Category 1',
+          note: 'Groceries\n#template 10\n#template-2 20',
+        },
+      ],
+      expectedTemplates: [
+        {
+          type: 'simple',
+          monthly: 10,
+          limit: null,
+          priority: 0,
+          directive: 'template',
+          description: 'Groceries',
+        },
+        {
+          type: 'simple',
+          monthly: 20,
+          limit: null,
+          priority: 2,
+          directive: 'template',
+        },
+      ],
+    },
   ];
 
   it.each(testCases)(
@@ -134,19 +224,20 @@ describe('storeTemplates', () => {
       mockDbUpdate();
 
       // When
-      await storeTemplates();
+      await storeNoteTemplates();
 
       // Then
       if (expectedTemplates.length === 0) {
-        expect(db.update).not.toHaveBeenCalled();
+        expect(db.updateWithSchema).not.toHaveBeenCalled();
         expect(resetCategoryGoalDefsWithNoTemplates).toHaveBeenCalled();
         return;
       }
 
       mockTemplateNotes.forEach(({ id }) => {
-        expect(db.update).toHaveBeenCalledWith('categories', {
+        expect(db.updateWithSchema).toHaveBeenCalledWith('categories', {
           id,
           goal_def: JSON.stringify(expectedTemplates),
+          template_settings: { source: 'notes' },
         });
       });
       expect(resetCategoryGoalDefsWithNoTemplates).toHaveBeenCalled();
@@ -156,7 +247,7 @@ describe('storeTemplates', () => {
 
 describe('checkTemplates', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   const testCases = [
@@ -177,7 +268,7 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         type: 'message',
-        message: 'All templates passed! 🎉',
+        message: 'templates-check-passed',
       },
     },
     {
@@ -192,7 +283,7 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         type: 'message',
-        message: 'All templates passed! 🎉',
+        message: 'templates-check-passed',
       },
     },
     {
@@ -207,7 +298,7 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         sticky: true,
-        message: 'There were errors interpreting some templates:',
+        message: 'template-errors',
         pre: 'Category 1: #template broken template',
       },
     },
@@ -223,8 +314,40 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         sticky: true,
-        message: 'There were errors interpreting some templates:',
-        pre: 'Category 1: Schedule “Non-existent Schedule” does not exist',
+        message: 'template-errors',
+        pre: 'Category 1: Schedule "Non-existent Schedule" does not exist',
+      },
+    },
+    {
+      description: 'Returns errors for invalid increase schedule adjustments',
+      mockTemplateNotes: [
+        {
+          id: 'cat1',
+          name: 'Category 1',
+          note: '#template schedule Mock Schedule 1 [increase 1001%]',
+        },
+      ],
+      mockSchedules: mockSchedules(),
+      expected: {
+        sticky: true,
+        message: 'template-errors',
+        pre: 'Category 1: #template schedule Mock Schedule 1 [increase 1001%]\nError: Invalid adjustment percentage (1001%). Must be between -100% and 1000%',
+      },
+    },
+    {
+      description: 'Returns errors for invalid decrease schedule adjustments',
+      mockTemplateNotes: [
+        {
+          id: 'cat1',
+          name: 'Category 1',
+          note: '#template schedule Mock Schedule 1 [decrease 101%]',
+        },
+      ],
+      mockSchedules: mockSchedules(),
+      expected: {
+        sticky: true,
+        message: 'template-errors',
+        pre: 'Category 1: #template schedule Mock Schedule 1 [decrease 101%]\nError: Invalid adjustment percentage (-101%). Must be between -100% and 1000%',
       },
     },
   ];
@@ -237,7 +360,7 @@ describe('checkTemplates', () => {
       mockGetActiveSchedules(mockSchedules);
 
       // When
-      const result = await checkTemplates();
+      const result = await checkTemplateNotes();
 
       // Then
       expect(result).toEqual(expected);
@@ -245,7 +368,7 @@ describe('checkTemplates', () => {
   );
 });
 
-function mockSchedules(): Schedule[] {
+function mockSchedules(): db.DbSchedule[] {
   return [
     {
       id: 'mock-schedule-1',
@@ -255,6 +378,8 @@ function mockSchedules(): Schedule[] {
       posts_transaction: 0,
       tombstone: 0,
       name: 'Mock Schedule 1',
+      custom_upcoming_length: null,
+      sort_order: 0,
     },
     {
       id: 'mock-schedule-2',
@@ -264,6 +389,140 @@ function mockSchedules(): Schedule[] {
       posts_transaction: 0,
       tombstone: 0,
       name: 'Mock Schedule 2',
+      custom_upcoming_length: null,
+      sort_order: 0,
     },
   ];
 }
+
+describe('unparse/parse round-trip', () => {
+  const cases: string[] = [
+    // simple
+    '#template 10',
+    '#template up to 50',
+    '#template up to 25 per day hold',
+    '#template up to 100 per week starting 2025-01-01',
+    '#template-2 123.45',
+    // schedule
+    '#template schedule Rent',
+    '#template schedule full Mortgage',
+    '#template schedule Netflix [increase 10%]',
+    '#template schedule full Groceries [decrease 5%]',
+    // percentage
+    '#template 50% of Utilities',
+    '#template 75% of previous Dining Out',
+    // periodic
+    '#template 200 repeat every 2 months starting 2025-06-01',
+    '#template 300 repeat every week starting 2025-01-07',
+    '#template 400 repeat every year starting 2025-01-01 up to 50',
+    '#template 100 repeat every 1 months starting 2026-04-01',
+    // by / spend
+    '#template 500 by 2025-12',
+    '#template 600 by 2025-11 repeat every month',
+    '#template 700 by 2025-10 repeat every 2 months',
+    '#template 800 by 2025-09 repeat every year',
+    '#template 900 by 2025-08 repeat every 3 years',
+    '#template 1000 by 2025-07 spend from 2025-01 repeat every month',
+    '#template 1100 by 2025-06 spend from 2025-02 repeat every 2 months',
+    // remainder
+    '#template remainder',
+    '#template remainder 2',
+    '#template remainder 3 up to 10',
+    // average
+    '#template average 6 months',
+    '#template-5 average 12 months',
+    // copy
+    '#template copy from 3 months ago',
+    '#template copy from 6 months ago',
+    // goal
+    '#goal 1234',
+  ];
+
+  it.each(cases)('round-trips: %s', async original => {
+    const parsed: Template = parse(original);
+    const serialized = await unparse([parsed]);
+    const reparsed: Template = parse(serialized);
+
+    expect(parsed).toEqual(reparsed);
+  });
+});
+
+describe('unparse limit templates', () => {
+  it('serializes refill limits to notes syntax', async () => {
+    const serialized = await unparse([
+      {
+        type: 'limit',
+        amount: 150,
+        hold: false,
+        period: 'monthly',
+        directive: 'template',
+        priority: null,
+      },
+      {
+        type: 'refill',
+        directive: 'template',
+        priority: 2,
+      },
+    ]);
+
+    expect(serialized).toBe('#template-2 up to 150');
+  });
+
+  it('serializes non-refill limits with a zero base amount', async () => {
+    const serialized = await unparse([
+      {
+        type: 'limit',
+        amount: 200,
+        hold: false,
+        period: 'monthly',
+        directive: 'template',
+        priority: null,
+      },
+    ]);
+
+    expect(serialized).toBe('#template 0 up to 200');
+  });
+});
+
+describe('unparse descriptions', () => {
+  it('writes a description above the template line', async () => {
+    const serialized = await unparse([
+      {
+        type: 'simple',
+        monthly: 10,
+        priority: 0,
+        directive: 'template',
+        description: 'Car insurance',
+      },
+    ]);
+
+    expect(serialized).toBe('Car insurance\n#template 10');
+  });
+
+  it('writes a multi-line description', async () => {
+    const serialized = await unparse([
+      {
+        type: 'goal',
+        amount: 100,
+        directive: 'goal',
+        description: 'Rainy day fund\nfor emergencies',
+      },
+    ]);
+
+    expect(serialized).toBe('Rainy day fund\nfor emergencies\n#goal 100');
+  });
+
+  it('drops blank lines so the note stays re-parseable', async () => {
+    const serialized = await unparse([
+      {
+        type: 'simple',
+        monthly: 10,
+        priority: 0,
+        directive: 'template',
+        description: 'first\n\nsecond',
+      },
+    ]);
+
+    expect(serialized).toBe('first\nsecond\n#template 10');
+  });
+});

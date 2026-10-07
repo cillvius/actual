@@ -1,10 +1,12 @@
-import React, { type ReactNode } from 'react';
+import React from 'react';
+import type { ReactNode } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { useNavigate } from '../../../hooks/useNavigate';
-import { Button } from '../../common/Button2';
-import { View } from '../../common/View';
-import { Page } from '../../Page';
+import { Button } from '@actual-app/components/button';
+import { View } from '@actual-app/components/view';
+
+import { Page } from '#components/Page';
+import { useNavigate } from '#hooks/useNavigate';
 
 import { UserDirectory } from './UserDirectory';
 

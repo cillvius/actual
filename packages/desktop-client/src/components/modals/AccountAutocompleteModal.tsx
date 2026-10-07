@@ -1,25 +1,29 @@
-import React, { type ComponentPropsWithoutRef } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { theme } from '../../style';
-import { AccountAutocomplete } from '../autocomplete/AccountAutocomplete';
-import {
-  ModalCloseButton,
-  Modal,
-  ModalTitle,
-  ModalHeader,
-} from '../common/Modal';
-import { View } from '../common/View';
-import { SectionLabel } from '../forms';
-import { useResponsive } from '../responsive/ResponsiveProvider';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
-type AccountAutocompleteModalProps = {
-  autocompleteProps: ComponentPropsWithoutRef<typeof AccountAutocomplete>;
-  onClose: () => void;
-};
+import { AccountAutocomplete } from '#components/autocomplete/AccountAutocomplete';
+import {
+  Modal,
+  ModalCloseButton,
+  ModalHeader,
+  ModalTitle,
+} from '#components/common/Modal';
+import { SectionLabel } from '#components/forms';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+
+type AccountAutocompleteModalProps = Extract<
+  ModalType,
+  { name: 'account-autocomplete' }
+>['options'];
 
 export function AccountAutocompleteModal({
-  autocompleteProps,
+  onSelect,
+  includeClosedAccounts,
+  hiddenAccounts,
   onClose,
 }: AccountAutocompleteModalProps) {
   const { t } = useTranslation();
@@ -35,12 +39,14 @@ export function AccountAutocompleteModal({
       onClose={onClose}
       containerProps={{
         style: {
-          height: isNarrowWidth ? '85vh' : 275,
+          height: isNarrowWidth
+            ? 'calc(var(--visual-viewport-height) * 0.85)'
+            : 275,
           backgroundColor: theme.menuAutoCompleteBackground,
         },
       }}
     >
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           {isNarrowWidth && (
             <ModalHeader
@@ -52,7 +58,7 @@ export function AccountAutocompleteModal({
               }
               rightContent={
                 <ModalCloseButton
-                  onPress={close}
+                  onPress={() => state.close()}
                   style={{ color: theme.menuAutoCompleteText }}
                 />
               }
@@ -71,12 +77,15 @@ export function AccountAutocompleteModal({
             )}
             <View style={{ flex: 1 }}>
               <AccountAutocomplete
-                focused={true}
-                embedded={true}
+                focused
+                embedded
                 closeOnBlur={false}
-                onClose={close}
+                onClose={() => state.close()}
                 {...defaultAutocompleteProps}
-                {...autocompleteProps}
+                onSelect={onSelect}
+                includeClosedAccounts={includeClosedAccounts}
+                hiddenAccounts={hiddenAccounts}
+                value={null}
               />
             </View>
           </View>

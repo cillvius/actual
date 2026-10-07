@@ -1,25 +1,28 @@
 import React from 'react';
 import { Trans } from 'react-i18next';
 
-import { Button } from '../common/Button2';
-import { View } from '../common/View';
+import { Button } from '@actual-app/components/button';
+import { View } from '@actual-app/components/view';
+
+import { useGlobalPref } from '#hooks/useGlobalPref';
 
 import { RenderMonths } from './RenderMonths';
 
+import { useBudgetComponents } from '.';
+
 type IncomeHeaderProps = {
-  MonthComponent?: () => JSX.Element;
   onShowNewGroup: () => void;
 };
 
-export function IncomeHeader({
-  MonthComponent,
-  onShowNewGroup,
-}: IncomeHeaderProps) {
+export function IncomeHeader({ onShowNewGroup }: IncomeHeaderProps) {
+  const [categoryExpandedStatePref] = useGlobalPref('categoryExpandedState');
+  const categoryExpandedState = categoryExpandedStatePref ?? 0;
+  const { IncomeHeaderComponent: MonthComponent } = useBudgetComponents();
   return (
     <View style={{ flexDirection: 'row', flex: 1 }}>
       <View
         style={{
-          width: 200,
+          width: 200 + 100 * categoryExpandedState,
           alignItems: 'flex-start',
           justifyContent: 'flex-start',
         }}
@@ -28,10 +31,9 @@ export function IncomeHeader({
           <Trans>Add group</Trans>
         </Button>
       </View>
-      <RenderMonths
-        component={MonthComponent}
-        style={{ border: 0, justifyContent: 'flex-end' }}
-      />
+      <RenderMonths style={{ border: 0, justifyContent: 'flex-end' }}>
+        <MonthComponent />
+      </RenderMonths>
     </View>
   );
 }

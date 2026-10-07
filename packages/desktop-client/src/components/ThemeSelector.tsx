@@ -1,15 +1,20 @@
-import React, { useRef, useState, type CSSProperties } from 'react';
-import { useTranslation } from 'react-i18next';
+import React, { useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 
-import type { Theme } from 'loot-core/src/types/prefs';
+import { Button } from '@actual-app/components/button';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import {
+  SvgMoonStars,
+  SvgSun,
+  SvgSystem,
+} from '@actual-app/components/icons/v2';
+import { Menu } from '@actual-app/components/menu';
+import { Popover } from '@actual-app/components/popover';
+import { Tooltip } from '@actual-app/components/tooltip';
+import type { Theme } from '@actual-app/core/types/prefs';
 
-import { SvgMoonStars, SvgSun, SvgSystem } from '../icons/v2';
-import { themeOptions, useTheme } from '../style';
-
-import { Button } from './common/Button2';
-import { Menu } from './common/Menu';
-import { Popover } from './common/Popover';
-import { useResponsive } from './responsive/ResponsiveProvider';
+import { themeOptions, useTheme } from '#style';
 
 type ThemeSelectorProps = {
   style?: CSSProperties;
@@ -28,15 +33,16 @@ export function ThemeSelector({ style }: ThemeSelectorProps) {
     dark: SvgMoonStars,
     auto: SvgSystem,
     midnight: SvgMoonStars,
-    development: SvgMoonStars,
   } as const;
+
+  type ThemeIconKey = keyof typeof themeIcons;
 
   function onMenuSelect(newTheme: Theme) {
     setMenuOpen(false);
     switchTheme(newTheme);
   }
 
-  const Icon = themeIcons[theme] || SvgSun;
+  const Icon = themeIcons[theme as ThemeIconKey] || SvgSun;
 
   if (isNarrowWidth) {
     return null;
@@ -44,15 +50,21 @@ export function ThemeSelector({ style }: ThemeSelectorProps) {
 
   return (
     <>
-      <Button
-        ref={triggerRef}
-        variant="bare"
-        aria-label={t('Switch theme')}
-        onPress={() => setMenuOpen(true)}
-        style={style}
+      <Tooltip
+        placement="bottom end"
+        content={<Trans>Switch theme</Trans>}
+        triggerProps={{ isDisabled: menuOpen }}
       >
-        <Icon style={{ width: 13, height: 13, color: 'inherit' }} />
-      </Button>
+        <Button
+          ref={triggerRef}
+          variant="bare"
+          aria-label={t('Switch theme')}
+          onPress={() => setMenuOpen(true)}
+          style={style}
+        >
+          <Icon style={{ width: 13, height: 13, color: 'inherit' }} />
+        </Button>
+      </Tooltip>
 
       <Popover
         offset={8}

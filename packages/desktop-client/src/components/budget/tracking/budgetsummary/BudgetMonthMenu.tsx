@@ -1,8 +1,10 @@
-import React, { type ComponentPropsWithoutRef } from 'react';
+import React from 'react';
+import type { ComponentPropsWithoutRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useFeatureFlag } from '../../../../hooks/useFeatureFlag';
-import { Menu } from '../../../common/Menu';
+import { Menu } from '@actual-app/components/menu';
+
+import { useFeatureFlag } from '#hooks/useFeatureFlag';
 
 type BudgetMonthMenuProps = Omit<
   ComponentPropsWithoutRef<typeof Menu>,
@@ -56,10 +58,12 @@ export function BudgetMonthMenu({
           case 'overwrite-goal-template':
             onOverwriteWithBudgetTemplates();
             break;
+          default:
+            throw new Error(`Unrecognized menu option: ${name}`);
         }
       }}
       items={[
-        { name: 'copy-last', text: t('Copy last month’s budget') },
+        { name: 'copy-last', text: t("Copy last month's budget") },
         { name: 'set-zero', text: t('Set budgets to zero') },
         {
           name: 'set-3-avg',

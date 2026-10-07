@@ -1,18 +1,23 @@
-import React, { type ComponentProps, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import React, { useState } from 'react';
+import type { ComponentProps } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 
-import { type TransactionEntity } from 'loot-core/types/models/transaction';
+import { SvgFilter } from '@actual-app/components/icons/v1';
+import { Label } from '@actual-app/components/label';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import type { IntegerAmount } from '@actual-app/core/shared/util';
+import type { TransactionEntity } from '@actual-app/core/types/models';
 
-import { SelectedProvider, useSelected } from '../../../hooks/useSelected';
-import { SvgSearchAlternate } from '../../../icons/v2';
-import { styles, theme } from '../../../style';
-import { InputWithContent } from '../../common/InputWithContent';
-import { Label } from '../../common/Label';
-import { View } from '../../common/View';
-import type { Binding, SheetNames, SheetFields } from '../../spreadsheet';
-import { CellValue, CellValueText } from '../../spreadsheet/CellValue';
-import { useSheetValue } from '../../spreadsheet/useSheetValue';
-import { PullToRefresh } from '../PullToRefresh';
+import { Search } from '#components/common/Search';
+import { PullToRefresh } from '#components/mobile/PullToRefresh';
+import { CellValue, CellValueText } from '#components/spreadsheet/CellValue';
+import { DisplayPayeeProvider } from '#hooks/useDisplayPayee';
+import { SelectedProvider, useSelected } from '#hooks/useSelected';
+import { useSheetValue } from '#hooks/useSheetValue';
+import type { Binding, SheetFields, SheetNames } from '#spreadsheet';
 
 import { TransactionList } from './TransactionList';
 
@@ -37,30 +42,18 @@ function TransactionSearchInput({
         width: '100%',
       }}
     >
-      <InputWithContent
-        leftContent={
-          <SvgSearchAlternate
-            style={{
-              width: 13,
-              height: 13,
-              flexShrink: 0,
-              color: text ? theme.formInputTextHighlight : 'inherit',
-              margin: 5,
-              marginRight: 0,
-            }}
-          />
-        }
+      <Search
         value={text}
-        onChangeValue={text => {
+        onChange={text => {
           setText(text);
           onSearch(text);
         }}
         placeholder={placeholder}
+        width="100%"
+        height={styles.mobileMinHeight}
         style={{
           backgroundColor: theme.tableBackground,
-          border: `1px solid ${theme.formInputBorder}`,
-          flex: 1,
-          height: styles.mobileMinHeight,
+          borderColor: theme.formInputBorder,
         }}
       />
     </View>
@@ -73,6 +66,7 @@ type TransactionListWithBalancesProps = {
   balance:
     | Binding<'account', 'onbudget-accounts-balance'>
     | Binding<'account', 'offbudget-accounts-balance'>
+    | Binding<'account', 'closed-accounts-balance'>
     | Binding<SheetNames, 'uncategorized-balance'>
     | Binding<'category', 'balance'>
     | Binding<'account', 'balance'>
@@ -83,12 +77,18 @@ type TransactionListWithBalancesProps = {
   balanceUncleared?:
     | Binding<'category', 'balanceUncleared'>
     | Binding<'account', 'balanceUncleared'>;
+  showRunningBalances?: boolean;
+  runningBalances?: Map<TransactionEntity['id'], IntegerAmount>;
   searchPlaceholder: string;
   onSearch: (searchText: string) => void;
   isLoadingMore: boolean;
   onLoadMore: () => void;
   onOpenTransaction: (transaction: TransactionEntity) => void;
   onRefresh?: () => void;
+  showMakeTransfer?: boolean;
+  isReconciling?: boolean;
+  onToggleTransactionCleared?: (transaction: TransactionEntity) => void;
+  filtered?: boolean;
 };
 
 export function TransactionListWithBalances({
@@ -97,18 +97,24 @@ export function TransactionListWithBalances({
   balance,
   balanceCleared,
   balanceUncleared,
+  showRunningBalances,
+  runningBalances,
   searchPlaceholder = 'Search...',
   onSearch,
   isLoadingMore,
   onLoadMore,
   onOpenTransaction,
   onRefresh,
+  showMakeTransfer = false,
+  isReconciling = false,
+  onToggleTransactionCleared,
+  filtered = false,
 }: TransactionListWithBalancesProps) {
   const selectedInst = useSelected('transactions', [...transactions], []);
 
   return (
-    <SelectedProvider instance={selectedInst}>
-      <>
+    <DisplayPayeeProvider transactions={transactions}>
+      <SelectedProvider instance={selectedInst}>
         <View
           style={{
             flexShrink: 0,
@@ -126,9 +132,22 @@ export function TransactionListWithBalances({
                 balance={balance}
                 balanceCleared={balanceCleared}
                 balanceUncleared={balanceUncleared}
+                alwaysShowCleared={isReconciling}
               />
             ) : (
-              <Balance balance={balance} />
+              <>
+                <View style={{ flexBasis: '33%' }} />
+                <Balance balance={balance} />
+                <View
+                  style={{
+                    flexBasis: '33%',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {filtered && <AppliedFiltersChip />}
+                </View>
+              </>
             )}
           </View>
           <TransactionSearchInput
@@ -137,19 +156,50 @@ export function TransactionListWithBalances({
           />
         </View>
         <PullToRefresh
-          isPullable={!!onRefresh}
+          isPullable={!isLoading && !!onRefresh}
           onRefresh={async () => onRefresh?.()}
+          style={{
+            '& .ptr__children': {
+              display: 'flex',
+            },
+          }}
         >
           <TransactionList
             isLoading={isLoading}
             transactions={transactions}
+            showRunningBalances={showRunningBalances}
+            runningBalances={runningBalances}
             isLoadingMore={isLoadingMore}
             onLoadMore={onLoadMore}
             onOpenTransaction={onOpenTransaction}
+            showMakeTransfer={showMakeTransfer}
+            isReconciling={isReconciling}
+            onToggleTransactionCleared={onToggleTransactionCleared}
           />
         </PullToRefresh>
-      </>
-    </SelectedProvider>
+      </SelectedProvider>
+    </DisplayPayeeProvider>
+  );
+}
+
+function AppliedFiltersChip() {
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: theme.pillBackgroundSelected,
+        color: theme.pillTextSelected,
+        borderRadius: 15,
+        padding: '4px 10px',
+      }}
+    >
+      <SvgFilter width={12} height={12} style={{ flexShrink: 0 }} />
+      <Text size="small" style={{ fontWeight: 500 }}>
+        <Trans>Filters applied</Trans>
+      </Text>
+    </View>
   );
 }
 
@@ -174,24 +224,27 @@ type BalanceWithClearedProps = {
     TransactionListWithBalancesProps['balanceCleared']
   >;
   balance: TransactionListWithBalancesProps['balance'];
+  alwaysShowCleared?: boolean;
 };
 
 function BalanceWithCleared({
   balanceUncleared,
   balanceCleared,
   balance,
+  alwaysShowCleared = false,
 }: BalanceWithClearedProps) {
   const { t } = useTranslation();
   const unclearedAmount = useSheetValue<
     'account' | 'category',
     'balanceUncleared'
   >(balanceUncleared);
+  const showCleared = !!unclearedAmount || alwaysShowCleared;
 
   return (
     <>
       <View
         style={{
-          display: !unclearedAmount ? 'none' : undefined,
+          display: !showCleared ? 'none' : undefined,
           flexBasis: '33%',
         }}
       >
@@ -219,7 +272,7 @@ function BalanceWithCleared({
       <Balance balance={balance} />
       <View
         style={{
-          display: !unclearedAmount ? 'none' : undefined,
+          display: !showCleared ? 'none' : undefined,
           flexBasis: '33%',
         }}
       >
@@ -266,7 +319,11 @@ function Balance({ balance }: BalanceProps) {
               textAlign: 'center',
               fontWeight: '500',
               color:
-                props.value < 0 ? theme.errorText : theme.pillTextHighlighted,
+                props.value < 0
+                  ? theme.numberNegative
+                  : props.value > 0
+                    ? theme.numberPositive
+                    : theme.numberNeutral,
             }}
             data-testid="transactions-balance"
           />

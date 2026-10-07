@@ -1,31 +1,36 @@
-import React, { type ComponentPropsWithoutRef } from 'react';
-import { useTranslation } from 'react-i18next';
+import React from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 
-import { useAccounts } from '../../hooks/useAccounts';
-import { useNavigate } from '../../hooks/useNavigate';
-import { usePayees } from '../../hooks/usePayees';
-import { theme } from '../../style';
-import { PayeeAutocomplete } from '../autocomplete/PayeeAutocomplete';
+import { Button } from '@actual-app/components/button';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+
+import { PayeeAutocomplete } from '#components/autocomplete/PayeeAutocomplete';
 import {
-  ModalCloseButton,
   Modal,
-  ModalTitle,
+  ModalCloseButton,
   ModalHeader,
-} from '../common/Modal';
-import { useResponsive } from '../responsive/ResponsiveProvider';
+  ModalTitle,
+} from '#components/common/Modal';
+import { useAccounts } from '#hooks/useAccounts';
+import { useNavigate } from '#hooks/useNavigate';
+import { usePayees } from '#hooks/usePayees';
+import type { Modal as ModalType } from '#modals/modalsSlice';
 
-type PayeeAutocompleteModalProps = {
-  autocompleteProps: ComponentPropsWithoutRef<typeof PayeeAutocomplete>;
-  onClose: () => void;
-};
+type PayeeAutocompleteModalProps = Extract<
+  ModalType,
+  { name: 'payee-autocomplete' }
+>['options'];
 
 export function PayeeAutocompleteModal({
-  autocompleteProps,
+  onSelect,
+  showNoneOption,
   onClose,
 }: PayeeAutocompleteModalProps) {
   const { t } = useTranslation();
-  const payees = usePayees() || [];
-  const accounts = useAccounts() || [];
+  const { data: payees = [] } = usePayees();
+  const { data: accounts = [] } = useAccounts();
   const navigate = useNavigate();
 
   const { isNarrowWidth } = useResponsive();
@@ -42,12 +47,14 @@ export function PayeeAutocompleteModal({
       onClose={onClose}
       containerProps={{
         style: {
-          height: isNarrowWidth ? '85vh' : 275,
+          height: isNarrowWidth
+            ? 'calc(var(--visual-viewport-height) * 0.85)'
+            : 275,
           backgroundColor: theme.menuAutoCompleteBackground,
         },
       }}
     >
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           {isNarrowWidth && (
             <ModalHeader
@@ -59,25 +66,43 @@ export function PayeeAutocompleteModal({
               }
               rightContent={
                 <ModalCloseButton
-                  onPress={close}
+                  onPress={() => state.close()}
                   style={{ color: theme.menuAutoCompleteText }}
                 />
               }
             />
           )}
-          <PayeeAutocomplete
-            payees={payees}
-            accounts={accounts}
-            focused={true}
-            embedded={true}
-            closeOnBlur={false}
-            onClose={close}
-            onManagePayees={onManagePayees}
-            showManagePayees={!isNarrowWidth}
-            showMakeTransfer={!isNarrowWidth}
-            {...defaultAutocompleteProps}
-            {...autocompleteProps}
-          />
+          <View>
+            <View style={{ flex: 1 }}>
+              <PayeeAutocomplete
+                payees={payees}
+                accounts={accounts}
+                focused
+                embedded
+                closeOnBlur={false}
+                onClose={() => state.close()}
+                onManagePayees={onManagePayees}
+                showManagePayees={!isNarrowWidth}
+                showMakeTransfer={!isNarrowWidth}
+                {...defaultAutocompleteProps}
+                onSelect={onSelect}
+                value={null}
+              />
+            </View>
+            {showNoneOption && (
+              <View style={{ flexShrink: 0, padding: 5 }}>
+                <Button
+                  variant="menu"
+                  onPress={() => {
+                    onSelect(null);
+                    state.close();
+                  }}
+                >
+                  <Trans>No payee</Trans>
+                </Button>
+              </View>
+            )}
+          </View>
         </>
       )}
     </Modal>

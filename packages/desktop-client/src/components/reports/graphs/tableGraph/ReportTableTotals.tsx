@@ -1,22 +1,13 @@
-import React, {
-  type ReactNode,
-  useLayoutEffect,
-  useState,
-  type RefObject,
-  type CSSProperties,
-} from 'react';
+import React, { useLayoutEffect, useState } from 'react';
+import type { CSSProperties, ReactNode, RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import {
-  type GroupedEntity,
-  type DataEntity,
-} from 'loot-core/src/types/models/reports';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import type { DataEntity, GroupedEntity } from '@actual-app/core/types/models';
 
-import { theme } from '../../../../style';
-import { styles } from '../../../../style/styles';
-import { View } from '../../../common/View';
-
-import { type renderTotalsProps } from './ReportTable';
+import type { renderTotalsProps } from './ReportTable';
 
 type RenderTotalsRowProps = {
   metadata: GroupedEntity;
@@ -50,7 +41,7 @@ function RenderTotalsRow({
 type ReportTableTotalsProps = {
   data: DataEntity;
   mode: string;
-  totalScrollRef: RefObject<HTMLDivElement>;
+  totalScrollRef: RefObject<HTMLDivElement | null>;
   compact: boolean;
   style?: CSSProperties;
   renderTotals: (arg: renderTotalsProps) => ReactNode;
@@ -79,7 +70,7 @@ export function ReportTableTotals({
       ];
       setScrollWidthTotals(parent > 0 && child > 0 ? parent - child : 0);
     }
-  });
+  }, [totalScrollRef]);
 
   const metadata: GroupedEntity = {
     id: '',
@@ -90,14 +81,15 @@ export function ReportTableTotals({
     netAssets: data.netAssets,
     netDebts: data.netDebts,
     totalTotals: data.totalTotals,
+    totalBudgeted: data.totalBudgeted,
   };
 
   const totalsStyle: CSSProperties = {
     borderTopWidth: 1,
     borderColor: theme.tableBorder,
     justifyContent: 'center',
-    color: theme.tableHeaderText,
-    backgroundColor: theme.tableHeaderBackground,
+    color: theme.tableRowHeaderText,
+    backgroundColor: theme.tableRowHeaderBackground,
     fontWeight: 600,
     ...style,
   };

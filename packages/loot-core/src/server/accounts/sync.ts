@@ -2,35 +2,41 @@
 import * as dateFns from 'date-fns';
 import { v4 as uuidv4 } from 'uuid';
 
-import * as asyncStorage from '../../platform/server/asyncStorage';
-import * as monthUtils from '../../shared/months';
-import { q } from '../../shared/query';
+import * as asyncStorage from '#platform/server/asyncStorage';
+import { logger } from '#platform/server/log';
+import { aqlQuery } from '#server/aql';
+import * as db from '#server/db';
+import { TRANSACTION_SORT_INCREMENT } from '#server/db/sort';
+import { TransactionError } from '#server/errors';
+import { runMutator } from '#server/mutators';
+import { post } from '#server/post';
+import { getServer } from '#server/server-config';
+import { batchMessages } from '#server/sync';
+import { batchUpdateTransactions } from '#server/transactions';
+import { runRules } from '#server/transactions/transaction-rules';
+import {
+  defaultMappings,
+  mappingsFromString,
+} from '#server/util/custom-sync-mapping';
+import * as monthUtils from '#shared/months';
+import { q } from '#shared/query';
 import {
   makeChild as makeChildTransaction,
   recalculateSplit,
-} from '../../shared/transactions';
+} from '#shared/transactions';
 import {
-  hasFieldsChanged,
   amountToInteger,
+  hasFieldsChanged,
   integerToAmount,
-} from '../../shared/util';
-import {
+} from '#shared/util';
+import type {
   AccountEntity,
   BankSyncResponse,
-  SimpleFinBatchSyncResponse,
   TransactionEntity,
-} from '../../types/models';
-import { runQuery } from '../aql';
-import * as db from '../db';
-import { runMutator } from '../mutators';
-import { post } from '../post';
-import { getServer } from '../server-config';
-import { batchMessages } from '../sync';
+} from '#types/models';
 
 import { getStartingBalancePayee } from './payees';
 import { title } from './title';
-import { runRules } from './transaction-rules';
-import { batchUpdateTransactions } from './transactions';
 
 function BankSyncError(type: string, code: string, details?: object) {
   return { type: 'BankSyncError', category: type, code, details };
@@ -62,16 +68,13 @@ function getAccountBalance(account) {
   }
 }
 
-async function updateAccountBalance(id, balance) {
-  await db.runQuery('UPDATE accounts SET balance_current = ? WHERE id = ?', [
-    amountToInteger(balance),
-    id,
-  ]);
+async function updateAccountBalance(id: AccountEntity['id'], balance: number) {
+  await db.update('accounts', { id, balance_current: balance });
 }
 
 async function getAccountOldestTransaction(id): Promise<TransactionEntity> {
   return (
-    await runQuery(
+    await aqlQuery(
       q('transactions')
         .filter({
           account: id,
@@ -87,7 +90,8 @@ async function getAccountOldestTransaction(id): Promise<TransactionEntity> {
 async function getAccountSyncStartDate(id) {
   // Many GoCardless integrations do not support getting more than 90 days
   // worth of data, so make that the earliest possible limit.
-  const dates = [monthUtils.subDays(monthUtils.currentDay(), 90)];
+  // 89 days ago until today inclusive is 90 days.
+  const dates = [monthUtils.subDays(monthUtils.currentDay(), 89)];
 
   const oldestTransaction = await getAccountOldestTransaction(id);
 
@@ -134,7 +138,7 @@ async function downloadGoCardlessTransactions(
   const userToken = await asyncStorage.getItem('user-token');
   if (!userToken) return;
 
-  console.log('Pulling transactions from GoCardless');
+  logger.log('Pulling transactions from GoCardless');
 
   const res = await post(
     getServer().GOCARDLESS_SERVER + '/transactions',
@@ -166,7 +170,7 @@ async function downloadGoCardlessTransactions(
       startingBalance,
     } = res;
 
-    console.log('Response:', res);
+    logger.log('Response:', res);
 
     return {
       transactions: all,
@@ -174,7 +178,7 @@ async function downloadGoCardlessTransactions(
       startingBalance,
     };
   } else {
-    console.log('Response:', res);
+    logger.log('Response:', res);
 
     return {
       transactions: res.transactions.all,
@@ -191,19 +195,26 @@ async function downloadSimpleFinTransactions(
 
   const batchSync = Array.isArray(acctId);
 
-  console.log('Pulling transactions from SimpleFin');
+  logger.log('Pulling transactions from SimpleFin');
 
-  const res = await post(
-    getServer().SIMPLEFIN_SERVER + '/transactions',
-    {
-      accountId: acctId,
-      startDate: since,
-    },
-    {
-      'X-ACTUAL-TOKEN': userToken,
-    },
-    60000,
-  );
+  let res;
+  try {
+    res = await post(
+      getServer().SIMPLEFIN_SERVER + '/transactions',
+      {
+        accountId: acctId,
+        startDate: since,
+      },
+      {
+        'X-ACTUAL-TOKEN': userToken,
+      },
+      // 5 minute timeout for batch sync, one minute for individual accounts
+      Array.isArray(acctId) ? 300000 : 60000,
+    );
+  } catch (error) {
+    logger.error('Suspected timeout during bank sync:', error);
+    throw BankSyncError('TIMED_OUT', 'TIMED_OUT');
+  }
 
   if (Object.keys(res).length === 0) {
     throw BankSyncError('NO_DATA', 'NO_DATA');
@@ -214,12 +225,12 @@ async function downloadSimpleFinTransactions(
 
   let retVal = {};
   if (batchSync) {
-    for (const [accountId, data] of Object.entries(
-      res as SimpleFinBatchSyncResponse,
-    )) {
+    const batchErrors = res.errors;
+    for (const accountId of Object.keys(res)) {
       if (accountId === 'errors') continue;
 
-      const error = res?.errors?.[accountId]?.[0];
+      const data = res[accountId];
+      const error = batchErrors?.[accountId]?.[0];
 
       retVal[accountId] = {
         transactions: data?.transactions?.all,
@@ -232,17 +243,156 @@ async function downloadSimpleFinTransactions(
         retVal[accountId].error_code = error.error_code;
       }
     }
+
+    // Add entries for accounts that only have errors (no data in the response)
+    if (batchErrors) {
+      for (const [accountId, errorList] of Object.entries(batchErrors)) {
+        if (
+          !retVal[accountId] &&
+          Array.isArray(errorList) &&
+          errorList.length > 0
+        ) {
+          const error = errorList[0];
+          retVal[accountId] = {
+            transactions: [],
+            accountBalance: [],
+            startingBalance: 0,
+            error_type: error.error_type,
+            error_code: error.error_code,
+          };
+        }
+      }
+    }
   } else {
-    const singleRes = res as BankSyncResponse;
     retVal = {
-      transactions: singleRes.transactions.all,
-      accountBalance: singleRes.balances,
-      startingBalance: singleRes.startingBalance,
+      transactions: res.transactions.all,
+      accountBalance: res.balances,
+      startingBalance: res.startingBalance,
     };
   }
 
-  console.log('Response:', retVal);
+  logger.log('Response:', retVal);
   return retVal;
+}
+
+async function downloadPluggyAiTransactions(
+  acctId: AccountEntity['id'],
+  since: string,
+  fileId?: string,
+) {
+  const userToken = await asyncStorage.getItem('user-token');
+  if (!userToken) return;
+
+  logger.log('Pulling transactions from Pluggy.ai');
+
+  const res = await post(
+    getServer().PLUGGYAI_SERVER + '/transactions',
+    {
+      accountId: acctId,
+      startDate: since,
+    },
+    {
+      'X-ACTUAL-TOKEN': userToken,
+      ...(fileId ? { 'X-Actual-File-Id': fileId } : {}),
+    },
+    60000,
+  );
+
+  if (res.error_code) {
+    throw BankSyncError(res.error_type, res.error_code);
+  } else if ('error' in res) {
+    throw BankSyncError('Connection', res.error);
+  }
+
+  let retVal = {};
+  const singleRes = res as BankSyncResponse;
+  retVal = {
+    transactions: singleRes.transactions.all,
+    accountBalance: singleRes.balances,
+    startingBalance: singleRes.startingBalance,
+  };
+
+  logger.log('Response:', retVal);
+  return retVal;
+}
+
+async function downloadAkahuTransactions(
+  acctId: AccountEntity['id'],
+  since: string,
+) {
+  const userToken = await asyncStorage.getItem('user-token');
+  if (!userToken) return;
+
+  logger.log('Pulling transactions from Akahu');
+
+  const res = await post(
+    getServer().AKAHU_SERVER + '/transactions',
+    {
+      accountId: acctId,
+      startDate: since,
+    },
+    {
+      'X-ACTUAL-TOKEN': userToken,
+    },
+    60000,
+  );
+
+  if (res.error_code) {
+    throw BankSyncError(res.error_type, res.error_code);
+  } else if ('error' in res) {
+    throw BankSyncError('Connection', res.error);
+  }
+
+  let retVal = {};
+  const singleRes = res as BankSyncResponse;
+  retVal = {
+    transactions: singleRes.transactions.all,
+    accountBalance: singleRes.balances,
+    startingBalance: singleRes.startingBalance,
+  };
+
+  logger.log('Response:', retVal);
+  return retVal;
+}
+
+async function downloadEnableBankingTransactions(
+  acctId: string,
+  since: string,
+  aspspName?: string,
+) {
+  const userToken = await asyncStorage.getItem('user-token');
+  if (!userToken) return;
+
+  logger.log('Pulling transactions from Enable Banking');
+
+  const res = await post(
+    getServer().ENABLEBANKING_SERVER + '/transactions',
+    {
+      accountId: acctId,
+      startDate: since,
+      aspspName,
+    },
+    {
+      'X-ACTUAL-TOKEN': userToken,
+    },
+    60000,
+  );
+
+  if (res.error_code) {
+    throw BankSyncError(res.error_type, res.error_code);
+  }
+
+  const {
+    transactions: { all },
+    balances,
+    startingBalance,
+  } = res;
+
+  return {
+    transactions: all,
+    accountBalance: balances,
+    startingBalance,
+  };
 }
 
 async function resolvePayee(trans, payeeName, payeesToCreate) {
@@ -265,10 +415,34 @@ async function resolvePayee(trans, payeeName, payeesToCreate) {
   return trans.payee;
 }
 
+export const PAYEE_NAME_NORMALIZATIONS = ['original', 'title-case'] as const;
+export type PayeeNameNormalization = (typeof PAYEE_NAME_NORMALIZATIONS)[number];
+
+function normalizePayeeName(
+  payeeName: string,
+  normalization: PayeeNameNormalization,
+): string {
+  switch (normalization) {
+    case 'original':
+      return payeeName;
+    case 'title-case':
+      return title(payeeName);
+    default:
+      normalization satisfies never;
+      throw new Error(
+        `Unknown payee name normalization: ${String(normalization)}`,
+      );
+  }
+}
+
 async function normalizeTransactions(
   transactions,
   acctId,
-  { rawPayeeName = false } = {},
+  {
+    payeeNameNormalization = 'title-case',
+  }: {
+    payeeNameNormalization?: PayeeNameNormalization;
+  } = {},
 ) {
   const payeesToCreate = new Map();
 
@@ -284,13 +458,29 @@ async function normalizeTransactions(
     const { payee_name: originalPayeeName, subtransactions, ...rest } = trans;
     trans = rest;
 
+    if (trans.amount != null && !Number.isInteger(trans.amount)) {
+      throw new TransactionError(
+        `Amount is invalid, must be an integer: ${trans.amount}`,
+      );
+    }
+
+    if (subtransactions) {
+      for (const sub of subtransactions) {
+        if (sub.amount != null && !Number.isInteger(sub.amount)) {
+          throw new TransactionError(
+            `Subtransaction amount is invalid, must be an integer: ${sub.amount}`,
+          );
+        }
+      }
+    }
+
     let payee_name = originalPayeeName;
     if (payee_name) {
       const trimmed = payee_name.trim();
       if (trimmed === '') {
         payee_name = null;
       } else {
-        payee_name = rawPayeeName ? trimmed : title(trimmed);
+        payee_name = normalizePayeeName(trimmed, payeeNameNormalization);
       }
     }
 
@@ -322,51 +512,84 @@ async function normalizeTransactions(
 async function normalizeBankSyncTransactions(transactions, acctId) {
   const payeesToCreate = new Map();
 
+  const [customMappingsRaw, importPending, importNotes] = await Promise.all([
+    aqlQuery(
+      q('preferences')
+        .filter({ id: `custom-sync-mappings-${acctId}` })
+        .select('value'),
+    ).then(data => data?.data?.[0]?.value),
+    aqlQuery(
+      q('preferences')
+        .filter({ id: `sync-import-pending-${acctId}` })
+        .select('value'),
+    ).then(data => String(data?.data?.[0]?.value ?? 'true') === 'true'),
+    aqlQuery(
+      q('preferences')
+        .filter({ id: `sync-import-notes-${acctId}` })
+        .select('value'),
+    ).then(data => String(data?.data?.[0]?.value ?? 'true') === 'true'),
+  ]);
+
+  const mappings = customMappingsRaw
+    ? mappingsFromString(customMappingsRaw)
+    : defaultMappings;
+
+  const categoryIds = new Set((await db.getCategories()).map(c => c.id));
   const normalized = [];
   for (const trans of transactions) {
+    trans.cleared = Boolean(trans.booked);
+
+    if (!importPending && !trans.cleared) continue;
+
     if (!trans.amount) {
       trans.amount = trans.transactionAmount.amount;
     }
 
+    const mapping = mappings.get(trans.amount <= 0 ? 'payment' : 'deposit');
+
+    const date = trans[mapping.get('date')] ?? trans.date;
+    const payeeName = trans[mapping.get('payee')] ?? trans.payeeName;
+    const notes = trans[mapping.get('notes')];
+
     // Validate the date because we do some stuff with it. The db
     // layer does better validation, but this will give nicer errors
-    if (trans.date == null) {
+    if (date == null) {
       throw new Error('`date` is required when adding a transaction');
     }
 
-    if (trans.payeeName == null) {
+    if (payeeName == null) {
       throw new Error('`payeeName` is required when adding a transaction');
     }
 
-    trans.imported_payee = trans.imported_payee || trans.payeeName;
+    trans.imported_payee = trans.imported_payee || payeeName;
     if (trans.imported_payee) {
       trans.imported_payee = trans.imported_payee.trim();
+    }
+
+    let imported_id = trans.transactionId;
+    if (trans.cleared && !trans.transactionId && trans.internalTransactionId) {
+      imported_id = `${trans.account}-${trans.internalTransactionId}`;
     }
 
     // It's important to resolve both the account and payee early so
     // when rules are run, they have the right data. Resolving payees
     // also simplifies the payee creation process
     trans.account = acctId;
-    trans.payee = await resolvePayee(trans, trans.payeeName, payeesToCreate);
-
-    trans.cleared = Boolean(trans.booked);
-
-    const notes =
-      trans.remittanceInformationUnstructured ||
-      (trans.remittanceInformationUnstructuredArray || []).join(', ');
+    trans.payee = await resolvePayee(trans, payeeName, payeesToCreate);
 
     normalized.push({
-      payee_name: trans.payeeName,
+      payee_name: payeeName,
       trans: {
         amount: amountToInteger(trans.amount),
         payee: trans.payee,
         account: trans.account,
-        date: trans.date,
-        notes: notes.trim().replace('#', '##'),
-        category: trans.category ?? null,
-        imported_id: trans.transactionId,
+        date,
+        notes: importNotes && notes ? notes.trim().replace(/#/g, '##') : null,
+        category: categoryIds.has(trans.category) ? trans.category : null,
+        imported_id,
         imported_payee: trans.imported_payee,
         cleared: trans.cleared,
+        raw_synced_data: JSON.stringify(trans),
       },
     });
   }
@@ -387,15 +610,44 @@ async function createNewPayees(payeesToCreate, addsAndUpdates) {
   });
 }
 
+export type MatchTransactionsOptions = {
+  isBankSyncAccount?: boolean;
+  strictIdChecking?: boolean;
+  reimportDeleted?: boolean;
+  payeeNameNormalization?: PayeeNameNormalization;
+};
+
+export type ReconcileTransactionsOptions = MatchTransactionsOptions & {
+  isPreview?: boolean;
+  defaultCleared?: boolean;
+  updateDates?: boolean;
+};
+
+export type ReconcileTransactionsResult = {
+  added: string[];
+  updated: string[];
+  updatedPreview: Array<{
+    transaction: TransactionEntity;
+    existing?: TransactionEntity;
+    ignored?: boolean;
+    tombstone?: boolean;
+  }>;
+};
+
 export async function reconcileTransactions(
   acctId,
   transactions,
-  isBankSyncAccount = false,
-  strictIdChecking = true,
-  isPreview = false,
-  defaultCleared = true,
-) {
-  console.log('Performing transaction reconciliation');
+  {
+    isBankSyncAccount = false,
+    strictIdChecking = true,
+    isPreview = false,
+    defaultCleared = true,
+    updateDates = false,
+    reimportDeleted,
+    payeeNameNormalization,
+  }: ReconcileTransactionsOptions = {},
+): Promise<ReconcileTransactionsResult> {
+  logger.log('Performing transaction reconciliation');
 
   const updated = [];
   const added = [];
@@ -407,12 +659,12 @@ export async function reconcileTransactions(
     transactionsStep1,
     transactionsStep2,
     transactionsStep3,
-  } = await matchTransactions(
-    acctId,
-    transactions,
+  } = await matchTransactions(acctId, transactions, {
     isBankSyncAccount,
     strictIdChecking,
-  );
+    reimportDeleted,
+    payeeNameNormalization,
+  });
 
   // Finally, generate & commit the changes
   for (const { trans, subtransactions, match } of transactionsStep3) {
@@ -437,10 +689,25 @@ export async function reconcileTransactions(
         category: existing.category || trans.category || null,
         imported_payee: trans.imported_payee || null,
         notes: existing.notes || trans.notes || null,
-        cleared: trans.cleared ?? existing.cleared,
+        cleared: existing.cleared || trans.cleared || false,
+        raw_synced_data:
+          existing.raw_synced_data ?? trans.raw_synced_data ?? null,
       };
 
-      if (hasFieldsChanged(existing, updates, Object.keys(updates))) {
+      if (updateDates && trans.date) {
+        updates['date'] = trans.date;
+      }
+
+      const fieldsToMarkUpdated = Object.keys(updates).filter(k => {
+        // do not mark raw_synced_data if it's gone from falsy to falsy
+        if (!existing.raw_synced_data && !trans.raw_synced_data) {
+          return k !== 'raw_synced_data';
+        }
+
+        return true;
+      });
+
+      if (hasFieldsChanged(existing, updates, fieldsToMarkUpdated)) {
         updated.push({ id: existing.id, ...updates });
         if (!existingPayeeMap.has(existing.payee)) {
           const payee = await db.getPayee(existing.payee);
@@ -453,18 +720,40 @@ export async function reconcileTransactions(
         updatedPreview.push({ transaction: trans, ignored: true });
       }
 
-      if (existing.is_parent && existing.cleared !== updates.cleared) {
-        const children = await db.all(
+      const clearedUpdated = existing.cleared !== updates.cleared;
+      const dateUpdated =
+        updateDates && trans.date && existing.date !== trans.date;
+
+      if (existing.is_parent && (clearedUpdated || dateUpdated)) {
+        const children = await db.all<Pick<db.DbViewTransaction, 'id'>>(
           'SELECT id FROM v_transactions WHERE parent_id = ?',
           [existing.id],
         );
-        for (const child of children) {
-          updated.push({ id: child.id, cleared: updates.cleared });
+        const childUpdates = {};
+
+        if (clearedUpdated) {
+          childUpdates['cleared'] = updates.cleared;
         }
+
+        if (dateUpdated) {
+          childUpdates['date'] = trans.date;
+        }
+
+        for (const child of children) {
+          updated.push({ id: child.id, ...childUpdates });
+        }
+      }
+    } else if (trans.tombstone) {
+      if (isPreview) {
+        updatedPreview.push({
+          transaction: trans,
+          existing: false,
+          tombstone: true,
+        });
       }
     } else {
       // Insert a new transaction
-      const { forceAddTransaction, ...newTrans } = trans;
+      const { forceAddTransaction: _forceAddTransaction, ...newTrans } = trans;
       const finalTransaction = {
         ...newTrans,
         id: uuidv4(),
@@ -483,7 +772,7 @@ export async function reconcileTransactions(
   // Maintain the sort order of the server
   const now = Date.now();
   added.forEach((t, index) => {
-    t.sort_order ??= now - index;
+    t.sort_order ??= now - index * TRANSACTION_SORT_INCREMENT;
   });
 
   if (!isPreview) {
@@ -491,7 +780,7 @@ export async function reconcileTransactions(
     await batchUpdateTransactions({ added, updated });
   }
 
-  console.log('Debug data for the operations:', {
+  logger.log('Debug data for the operations:', {
     transactionsStep1,
     transactionsStep2,
     transactionsStep3,
@@ -507,27 +796,65 @@ export async function reconcileTransactions(
   };
 }
 
+// Ranks fuzzy-match candidates by distance from transaction date, nearest first.
+// On a same-distance tie, a candidate that already carries its own imported_id
+// (from a previous, unrelated sync) ranks after one that doesn't. Without this
+// tie-break, picking the already-imported one would lead the fuzzy match merge
+// to silently overwrite imported_id/payee/notes with this transaction's data.
+export function compareFuzzyMatchCandidates(
+  transactionDate: string,
+  a: Pick<db.DbViewTransaction, 'date' | 'imported_id'>,
+  b: Pick<db.DbViewTransaction, 'date' | 'imported_id'>,
+): number {
+  const aDistance = Math.abs(
+    dateFns.differenceInMilliseconds(
+      dateFns.parseISO(transactionDate),
+      dateFns.parseISO(db.fromDateRepr(a.date)),
+    ),
+  );
+  const bDistance = Math.abs(
+    dateFns.differenceInMilliseconds(
+      dateFns.parseISO(transactionDate),
+      dateFns.parseISO(db.fromDateRepr(b.date)),
+    ),
+  );
+  const aHasImportedId = Number(a.imported_id != null);
+  const bHasImportedId = Number(b.imported_id != null);
+  return aDistance - bDistance || aHasImportedId - bHasImportedId;
+}
+
 export async function matchTransactions(
   acctId,
   transactions,
-  isBankSyncAccount = false,
-  strictIdChecking = true,
+  {
+    isBankSyncAccount = false,
+    strictIdChecking = true,
+    reimportDeleted: reimportDeletedOverride,
+    payeeNameNormalization,
+  }: MatchTransactionsOptions = {},
 ) {
-  console.log('Performing transaction reconciliation matching');
+  logger.log('Performing transaction reconciliation matching');
+
+  const reimportDeleted =
+    reimportDeletedOverride !== undefined
+      ? reimportDeletedOverride
+      : await aqlQuery(
+          q('preferences')
+            .filter({ id: `sync-reimport-deleted-${acctId}` })
+            .select('value'),
+        ).then(data => String(data?.data?.[0]?.value ?? 'true') === 'true');
 
   const hasMatched = new Set();
+  const exactMatchedParentIds = new Set<db.DbViewTransaction['id']>();
 
-  const transactionNormalization = isBankSyncAccount
-    ? normalizeBankSyncTransactions
-    : normalizeTransactions;
-
-  const { normalized, payeesToCreate } = await transactionNormalization(
-    transactions,
-    acctId,
-  );
+  const { normalized, payeesToCreate } = isBankSyncAccount
+    ? await normalizeBankSyncTransactions(transactions, acctId)
+    : await normalizeTransactions(transactions, acctId, {
+        payeeNameNormalization,
+      });
 
   // The first pass runs the rules, and preps data for fuzzy matching
-  const accounts: AccountEntity[] = await db.getAccounts();
+  const accounts: db.DbAccount[] = await db.getAccounts();
   const accountsMap = new Map(accounts.map(account => [account.id, account]));
 
   const transactionsStep1 = [];
@@ -546,13 +873,20 @@ export async function matchTransactions(
     // is the highest fidelity match and should always be attempted
     // first.
     if (trans.imported_id) {
-      match = await db.first(
-        'SELECT * FROM v_transactions WHERE imported_id = ? AND account = ?',
+      const table = reimportDeleted
+        ? 'v_transactions'
+        : 'v_transactions_internal';
+      match = await db.first<db.DbTransaction>(
+        `SELECT * FROM ${table} WHERE imported_id = ? AND account = ?`,
         [trans.imported_id, acctId],
       );
 
       if (match) {
         hasMatched.add(match.id);
+
+        if (isBankSyncAccount && match.is_parent) {
+          exactMatchedParentIds.add(match.id);
+        }
       }
     }
 
@@ -567,8 +901,24 @@ export async function matchTransactions(
       // strictIdChecking has the added behaviour of only matching on transactions with no import ID
       // if the transaction being imported has an import ID.
       if (strictIdChecking) {
-        fuzzyDataset = await db.all(
-          `SELECT id, is_parent, date, imported_id, payee, imported_payee, category, notes, reconciled, cleared, amount
+        fuzzyDataset = await db.all<
+          Pick<
+            db.DbViewTransaction,
+            | 'id'
+            | 'is_parent'
+            | 'parent_id'
+            | 'date'
+            | 'imported_id'
+            | 'payee'
+            | 'imported_payee'
+            | 'category'
+            | 'notes'
+            | 'reconciled'
+            | 'cleared'
+            | 'amount'
+          >
+        >(
+          `SELECT id, is_parent, parent_id, date, imported_id, payee, imported_payee, category, notes, reconciled, cleared, amount
           FROM v_transactions
           WHERE
             -- If both ids are set, and we didn't match earlier then skip dedup
@@ -584,8 +934,24 @@ export async function matchTransactions(
           ],
         );
       } else {
-        fuzzyDataset = await db.all(
-          `SELECT id, is_parent, date, imported_id, payee, imported_payee, category, notes, reconciled, cleared, amount
+        fuzzyDataset = await db.all<
+          Pick<
+            db.DbViewTransaction,
+            | 'id'
+            | 'is_parent'
+            | 'parent_id'
+            | 'date'
+            | 'imported_id'
+            | 'payee'
+            | 'imported_payee'
+            | 'category'
+            | 'notes'
+            | 'reconciled'
+            | 'cleared'
+            | 'amount'
+          >
+        >(
+          `SELECT id, is_parent, parent_id, date, imported_id, payee, imported_payee, category, notes, reconciled, cleared, amount
           FROM v_transactions
           WHERE date >= ? AND date <= ? AND amount = ? AND account = ?`,
           [sevenDaysBefore, sevenDaysAfter, trans.amount || 0, acctId],
@@ -596,21 +962,9 @@ export async function matchTransactions(
       // transactions date. i.e. if the original transaction is in 21-02-2024 and
       // the matched transactions are: 20-02-2024, 21-02-2024, 29-02-2024 then
       // the resulting data-set should be: 21-02-2024, 20-02-2024, 29-02-2024.
-      fuzzyDataset = fuzzyDataset.sort((a, b) => {
-        const aDistance = Math.abs(
-          dateFns.differenceInMilliseconds(
-            dateFns.parseISO(trans.date),
-            dateFns.parseISO(db.fromDateRepr(a.date)),
-          ),
-        );
-        const bDistance = Math.abs(
-          dateFns.differenceInMilliseconds(
-            dateFns.parseISO(trans.date),
-            dateFns.parseISO(db.fromDateRepr(b.date)),
-          ),
-        );
-        return aDistance > bDistance ? 1 : -1;
-      });
+      fuzzyDataset = fuzzyDataset.sort((a, b) =>
+        compareFuzzyMatchCandidates(trans.date, a, b),
+      );
     }
 
     transactionsStep1.push({
@@ -631,7 +985,10 @@ export async function matchTransactions(
     if (!data.match && data.fuzzyDataset) {
       // Try to find one where the payees match.
       const match = data.fuzzyDataset.find(
-        row => !hasMatched.has(row.id) && data.trans.payee === row.payee,
+        row =>
+          !hasMatched.has(row.id) &&
+          !exactMatchedParentIds.has(row.parent_id) &&
+          data.trans.payee === row.payee,
       );
 
       if (match) {
@@ -648,7 +1005,10 @@ export async function matchTransactions(
   // around the same date with the same amount.
   const transactionsStep3 = transactionsStep2.map(data => {
     if (!data.match && data.fuzzyDataset) {
-      const match = data.fuzzyDataset.find(row => !hasMatched.has(row.id));
+      const match = data.fuzzyDataset.find(
+        row =>
+          !hasMatched.has(row.id) && !exactMatchedParentIds.has(row.parent_id),
+      );
       if (match) {
         hasMatched.add(match.id);
         return { ...data, match };
@@ -677,10 +1037,10 @@ export async function addTransactions(
   const { normalized, payeesToCreate } = await normalizeTransactions(
     transactions,
     acctId,
-    { rawPayeeName: true },
+    { payeeNameNormalization: 'original' },
   );
 
-  const accounts: AccountEntity[] = await db.getAccounts();
+  const accounts: db.DbAccount[] = await db.getAccounts();
   const accountsMap = new Map(accounts.map(account => [account.id, account]));
 
   for (const { trans: originalTrans, subtransactions } of normalized) {
@@ -708,6 +1068,14 @@ export async function addTransactions(
 
   await createNewPayees(payeesToCreate, added);
 
+  // Assign decreasing sort_order values to preserve import file order.
+  // Transactions are displayed in sort_order DESC order, so first transaction
+  // in the file should have the highest sort_order.
+  const now = Date.now();
+  added.forEach((t, index) => {
+    t.sort_order ??= now - index * TRANSACTION_SORT_INCREMENT;
+  });
+
   let newTransactions;
   if (runTransfers || learnCategories) {
     const res = await batchUpdateTransactions({
@@ -731,32 +1099,87 @@ async function processBankSyncDownload(
   id,
   acctRow,
   initialSync = false,
+  customStartingBalance?: number,
+  customStartingDate?: string,
 ) {
   // If syncing an account from sync source it must not use strictIdChecking. This allows
   // the fuzzy search to match transactions where the import IDs are different. It is a known quirk
   // that account sync sources can give two different transaction IDs even though it's the same transaction.
   const useStrictIdChecking = !acctRow.account_sync_source;
 
+  const importTransactions = await aqlQuery(
+    q('preferences')
+      .filter({ id: `sync-import-transactions-${id}` })
+      .select('value'),
+  ).then(data => String(data?.data?.[0]?.value ?? 'true') === 'true');
+
+  const updateDates = await aqlQuery(
+    q('preferences')
+      .filter({ id: `sync-update-dates-${id}` })
+      .select('value'),
+  ).then(data => String(data?.data?.[0]?.value ?? 'false') === 'true');
+
+  /** Starting balance is actually the current balance of the account. */
+  const {
+    transactions: originalTransactions,
+    startingBalance: currentBalance,
+  } = download;
+
   if (initialSync) {
     const { transactions } = download;
-    let balanceToUse = download.startingBalance;
+    let balanceToUse = currentBalance;
 
-    if (acctRow.account_sync_source === 'simpleFin') {
-      const currentBalance = download.startingBalance;
+    // Use custom starting balance if provided, otherwise calculate it
+    if (customStartingBalance !== undefined) {
+      balanceToUse = customStartingBalance;
+    } else if (acctRow.account_sync_source === 'simpleFin') {
       const previousBalance = transactions.reduce((total, trans) => {
         return (
           total - parseInt(trans.transactionAmount.amount.replace('.', ''))
         );
       }, currentBalance);
       balanceToUse = previousBalance;
+    } else if (acctRow.account_sync_source === 'pluggyai') {
+      const currentBalance = download.startingBalance;
+      const previousBalance = transactions.reduce(
+        (total, trans) => total - trans.transactionAmount.amount * 100,
+        currentBalance,
+      );
+      balanceToUse = Math.round(previousBalance);
+    } else if (acctRow.account_sync_source === 'enableBanking') {
+      const importPending = await aqlQuery(
+        q('preferences')
+          .filter({ id: `sync-import-pending-${id}` })
+          .select('value'),
+      ).then(data => String(data?.data?.[0]?.value ?? 'true') === 'true');
+      const importable = importPending
+        ? transactions
+        : transactions.filter(trans => Boolean(trans.booked));
+      const previousBalance = importable.reduce((total, trans) => {
+        return total - amountToInteger(trans.transactionAmount.amount);
+      }, currentBalance);
+      balanceToUse = previousBalance;
+    } else if (acctRow.account_sync_source === 'akahu') {
+      const currentBalance = download.startingBalance;
+      const previousBalance = transactions.reduce(
+        (total, trans) =>
+          total - amountToInteger(trans.transactionAmount.amount),
+        currentBalance,
+      );
+      balanceToUse = Math.round(previousBalance);
     }
 
     const oldestTransaction = transactions[transactions.length - 1];
 
-    const oldestDate =
-      transactions.length > 0
-        ? oldestTransaction.date
-        : monthUtils.currentDay();
+    // Use custom starting date if provided, otherwise use oldest transaction date or current day
+    let startingBalanceDate: string;
+    if (customStartingDate) {
+      startingBalanceDate = customStartingDate;
+    } else if (transactions.length > 0) {
+      startingBalanceDate = oldestTransaction.date;
+    } else {
+      startingBalanceDate = monthUtils.currentDay();
+    }
 
     const payee = await getStartingBalancePayee();
 
@@ -766,28 +1189,21 @@ async function processBankSyncDownload(
         amount: balanceToUse,
         category: acctRow.offbudget === 0 ? payee.category : null,
         payee: payee.id,
-        date: oldestDate,
+        date: startingBalanceDate,
         cleared: true,
         starting_balance_flag: true,
       });
 
-      const result = await reconcileTransactions(
-        id,
-        transactions,
-        true,
-        useStrictIdChecking,
-      );
+      const result = await reconcileTransactions(id, transactions, {
+        isBankSyncAccount: true,
+        strictIdChecking: useStrictIdChecking,
+        updateDates,
+      });
       return {
         ...result,
         added: [initialId, ...result.added],
       };
     });
-  }
-
-  const { transactions: originalTransactions, accountBalance } = download;
-
-  if (originalTransactions.length === 0) {
-    return { added: [], updated: [] };
   }
 
   const transactions = originalTransactions.map(trans => ({
@@ -798,33 +1214,50 @@ async function processBankSyncDownload(
   return runMutator(async () => {
     const result = await reconcileTransactions(
       id,
-      transactions,
-      true,
-      useStrictIdChecking,
+      importTransactions ? transactions : [],
+      {
+        isBankSyncAccount: true,
+        strictIdChecking: useStrictIdChecking,
+        updateDates,
+      },
     );
 
-    if (accountBalance) await updateAccountBalance(id, accountBalance);
+    if (currentBalance != null) {
+      await updateAccountBalance(id, currentBalance);
+    }
 
     return result;
   });
 }
 
 export async function syncAccount(
-  userId: string,
-  userKey: string,
+  userId: string | undefined,
+  userKey: string | undefined,
   id: string,
   acctId: string,
   bankId: string,
+  customStartingDate?: string,
+  customStartingBalance?: number,
+  fileId?: string,
 ) {
   const acctRow = await db.select('accounts', id);
 
-  const syncStartDate = await getAccountSyncStartDate(id);
+  const syncStartDate =
+    customStartingDate ?? (await getAccountSyncStartDate(id));
   const oldestTransaction = await getAccountOldestTransaction(id);
   const newAccount = oldestTransaction == null;
 
   let download;
   if (acctRow.account_sync_source === 'simpleFin') {
     download = await downloadSimpleFinTransactions(acctId, syncStartDate);
+  } else if (acctRow.account_sync_source === 'pluggyai') {
+    download = await downloadPluggyAiTransactions(
+      acctId,
+      syncStartDate,
+      fileId,
+    );
+  } else if (acctRow.account_sync_source === 'akahu') {
+    download = await downloadAkahuTransactions(acctId, syncStartDate);
   } else if (acctRow.account_sync_source === 'goCardless') {
     download = await downloadGoCardlessTransactions(
       userId,
@@ -834,34 +1267,68 @@ export async function syncAccount(
       syncStartDate,
       newAccount,
     );
+  } else if (acctRow.account_sync_source === 'enableBanking') {
+    const bankRow = await db.select('banks', acctRow.bank);
+    download = await downloadEnableBankingTransactions(
+      acctId,
+      syncStartDate,
+      bankRow?.name,
+    );
   } else {
     throw new Error(
       `Unrecognized bank-sync provider: ${acctRow.account_sync_source}`,
     );
   }
 
-  return processBankSyncDownload(download, id, acctRow, newAccount);
+  return processBankSyncDownload(
+    download,
+    id,
+    acctRow,
+    newAccount,
+    customStartingBalance,
+    customStartingDate,
+  );
 }
 
-export async function SimpleFinBatchSync(
-  accounts: {
-    id: AccountEntity['id'];
-    accountId: AccountEntity['account_id'];
-  }[],
+export async function simpleFinBatchSync(
+  accounts: Array<Pick<AccountEntity, 'id' | 'account_id'>>,
 ) {
   const startDates = await Promise.all(
     accounts.map(async a => getAccountSyncStartDate(a.id)),
   );
 
   const res = await downloadSimpleFinTransactions(
-    accounts.map(a => a.accountId),
+    accounts.map(a => a.account_id),
     startDates,
   );
+
+  if (!res) {
+    return accounts.map(account => ({
+      accountId: account.id,
+      res: {
+        error_type: 'NO_DATA',
+        error_code: 'NO_DATA',
+      },
+    }));
+  }
 
   const promises = [];
   for (let i = 0; i < accounts.length; i++) {
     const account = accounts[i];
-    const download = res[account.accountId];
+    const download = res[account.account_id];
+
+    if (!download || Object.keys(download).length === 0) {
+      promises.push(
+        Promise.resolve({
+          accountId: account.id,
+          res: {
+            error_type: 'ACCOUNT_MISSING',
+            error_code: 'ACCOUNT_MISSING',
+          },
+        }),
+      );
+      continue;
+    }
 
     const acctRow = await db.select('accounts', account.id);
     const oldestTransaction = await getAccountOldestTransaction(account.id);
@@ -878,13 +1345,32 @@ export async function SimpleFinBatchSync(
       continue;
     }
 
+    if (!download.transactions) {
+      promises.push(
+        Promise.resolve({
+          accountId: account.id,
+          res: {
+            error_type: 'ACCOUNT_MISSING',
+            error_code: 'ACCOUNT_MISSING',
+          },
+        }),
+      );
+      continue;
+    }
+
     promises.push(
-      processBankSyncDownload(download, account.id, acctRow, newAccount).then(
-        res => ({
+      processBankSyncDownload(download, account.id, acctRow, newAccount)
+        .then(res => ({
           accountId: account.id,
           res,
-        }),
-      ),
+        }))
+        .catch(err => ({
+          accountId: account.id,
+          res: {
+            error_type: err?.category || 'INTERNAL_ERROR',
+            error_code: err?.code || 'INTERNAL_ERROR',
+          },
+        })),
     );
   }
 

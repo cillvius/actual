@@ -1,11 +1,13 @@
 // @ts-strict-ignore
-import React, { type ChangeEvent, type ReactNode, useState } from 'react';
+import React, { useState } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { theme } from '../../../style';
-import { ButtonWithLoading } from '../../common/Button2';
-import { BigInput } from '../../common/Input';
-import { View } from '../../common/View';
+import { ButtonWithLoading } from '@actual-app/components/button';
+import { BigInput } from '@actual-app/components/input';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { css } from '@emotion/css';
 
 type ConfirmPasswordFormProps = {
   buttons: ReactNode;
@@ -52,7 +54,7 @@ export function ConfirmPasswordForm({
       }}
     >
       <BigInput
-        autoFocus={true}
+        autoFocus
         placeholder={t('Password')}
         type={showPassword ? 'text' : 'password'}
         value={password1}
@@ -94,7 +96,11 @@ export function ConfirmPasswordForm({
   );
 }
 
-export function ConfirmOldPasswordForm({ buttons, onSetPassword }) {
+export function ConfirmOldPasswordForm({
+  buttons,
+  onSetPassword,
+  style = null,
+}) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -121,10 +127,11 @@ export function ConfirmOldPasswordForm({ buttons, onSetPassword }) {
         flexDirection: 'column',
         alignItems: 'stretch',
         marginTop: 30,
+        ...style,
       }}
     >
       <BigInput
-        autoFocus={true}
+        autoFocus
         placeholder={t('Password')}
         type={showPassword ? 'text' : 'password'}
         value={password}
@@ -132,12 +139,12 @@ export function ConfirmOldPasswordForm({ buttons, onSetPassword }) {
           setPassword(e.target.value)
         }
         onEnter={onSubmit}
-        style={{
+        className={css({
           borderColor: theme.buttonMenuBorder,
           borderWidth: 1,
           borderStyle: 'solid',
-          ':focus': {},
-        }}
+          '&[data-focused]': {},
+        })}
       />
 
       <View

@@ -1,34 +1,40 @@
-import React, {
-  useState,
-  type ComponentPropsWithoutRef,
-  useEffect,
-  type CSSProperties,
-} from 'react';
-import { useTranslation } from 'react-i18next';
+import React, { useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Trans } from 'react-i18next';
 
-import { envelopeBudget } from 'loot-core/client/queries';
-import { amountToInteger, integerToAmount } from 'loot-core/shared/util';
+import { Button } from '@actual-app/components/button';
+import {
+  SvgCheveronDown,
+  SvgCheveronUp,
+} from '@actual-app/components/icons/v1';
+import { SvgNotesPaper } from '@actual-app/components/icons/v2';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { amountToInteger, integerToAmount } from '@actual-app/core/shared/util';
+import { t } from 'i18next';
 
-import { useCategory } from '../../hooks/useCategory';
-import { theme, styles } from '../../style';
-import { BudgetMenu } from '../budget/envelope/BudgetMenu';
-import { useEnvelopeSheetValue } from '../budget/envelope/EnvelopeBudgetComponents';
+import { BudgetMenu } from '#components/budget/envelope/BudgetMenu';
+import { useEnvelopeSheetValue } from '#components/budget/envelope/EnvelopeBudgetComponents';
 import {
   Modal,
   ModalCloseButton,
   ModalHeader,
   ModalTitle,
-} from '../common/Modal';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { FocusableAmountInput } from '../mobile/transactions/FocusableAmountInput';
+} from '#components/common/Modal';
+import { AmountInput } from '#components/mobile/transactions/AmountInput';
+import { Notes } from '#components/Notes';
+import { useCategory } from '#hooks/useCategory';
+import { useFeatureFlag } from '#hooks/useFeatureFlag';
+import { useNotes } from '#hooks/useNotes';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+import { envelopeBudget } from '#spreadsheet/bindings';
 
-type EnvelopeBudgetMenuModalProps = ComponentPropsWithoutRef<
-  typeof BudgetMenu
-> & {
-  categoryId: string;
-  onUpdateBudget: (amount: number) => void;
-};
+type EnvelopeBudgetMenuModalProps = Extract<
+  ModalType,
+  { name: 'envelope-budget-menu' }
+>['options'];
 
 export function EnvelopeBudgetMenuModal({
   categoryId,
@@ -36,7 +42,17 @@ export function EnvelopeBudgetMenuModal({
   onCopyLastMonthAverage,
   onSetMonthsAverage,
   onApplyBudgetTemplate,
+  onEditNotes,
+  month,
 }: EnvelopeBudgetMenuModalProps) {
+  const buttonStyle: CSSProperties = {
+    ...styles.mediumText,
+    height: styles.mobileMinHeight,
+    color: theme.formLabelText,
+    // Adjust based on desired number of buttons per row.
+    flexBasis: '100%',
+  };
+
   const defaultMenuItemStyle: CSSProperties = {
     ...styles.mobileMenuItem,
     color: theme.menuItemText,
@@ -44,73 +60,131 @@ export function EnvelopeBudgetMenuModal({
     borderTop: `1px solid ${theme.pillBorder}`,
   };
 
-  const { t } = useTranslation();
   const budgeted = useEnvelopeSheetValue(
     envelopeBudget.catBudgeted(categoryId),
   );
-  const category = useCategory(categoryId);
-  const [amountFocused, setAmountFocused] = useState(false);
+  const { data: category } = useCategory(categoryId);
+  const mobileCalculatorEnabled = useFeatureFlag('mobileCalculator');
 
+  const notesId = category ? `${category.id}-${month}` : '';
+  const originalNotes = useNotes(notesId) ?? '';
   const _onUpdateBudget = (amount: number) => {
     onUpdateBudget?.(amountToInteger(amount));
   };
 
-  useEffect(() => {
-    setAmountFocused(true);
-  }, []);
+  const [showMore, setShowMore] = useState(false);
+
+  const onShowMore = () => {
+    setShowMore(!showMore);
+  };
+
+  const _onEditNotes = () => {
+    if (category && month) {
+      onEditNotes?.(`${category.id}-${month}`, month);
+    }
+  };
 
   if (!category) {
     return null;
   }
 
   return (
-    <Modal name="envelope-budget-menu">
-      {({ state: { close } }) => (
+    <Modal
+      name="envelope-budget-menu"
+      wrapperProps={{
+        style: mobileCalculatorEnabled ? { paddingBottom: '30vh' } : undefined,
+      }}
+    >
+      {({ state }) => (
         <>
           <ModalHeader
             title={<ModalTitle title={category.name} shrinkOnOverflow />}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View
             style={{
               justifyContent: 'center',
               alignItems: 'center',
-              marginBottom: 20,
             }}
           >
-            <Text
-              style={{
-                fontSize: 17,
-                fontWeight: 400,
-              }}
-            >
-              {t('Budgeted')}
+            <Text size="extra-large" style={{ fontWeight: 400 }}>
+              <Trans>Budgeted</Trans>
             </Text>
-            <FocusableAmountInput
+            <AmountInput
               value={integerToAmount(budgeted || 0)}
-              focused={amountFocused}
-              onFocus={() => setAmountFocused(true)}
-              onBlur={() => setAmountFocused(false)}
-              onEnter={close}
-              zeroSign="+"
-              focusedStyle={{
-                width: 'auto',
-                padding: '5px',
-                paddingLeft: '20px',
-                paddingRight: '20px',
-                minWidth: '100%',
-              }}
-              textStyle={{ ...styles.veryLargeText, textAlign: 'center' }}
-              onUpdateAmount={_onUpdateBudget}
+              onEnter={() => state.close()}
+              onChange={_onUpdateBudget}
               data-testid="budget-amount"
+              autoFocus
+              autoFocusDelay={150}
+              variant="large"
             />
           </View>
-          <BudgetMenu
-            getItemStyle={() => defaultMenuItemStyle}
-            onCopyLastMonthAverage={onCopyLastMonthAverage}
-            onSetMonthsAverage={onSetMonthsAverage}
-            onApplyBudgetTemplate={onApplyBudgetTemplate}
-          />
+          <View
+            style={{
+              display: showMore ? 'none' : undefined,
+              overflowY: 'auto',
+              flex: 1,
+            }}
+          >
+            <Notes
+              notes={originalNotes.length > 0 ? originalNotes : t('No notes')}
+              editable={false}
+              focused={false}
+              getStyle={() => ({
+                borderRadius: 6,
+                ...(originalNotes.length === 0 && {
+                  justifySelf: 'center',
+                  alignSelf: 'center',
+                  color: theme.pageTextSubdued,
+                }),
+              })}
+            />
+          </View>
+          <View
+            style={{
+              display: showMore ? 'none' : undefined,
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              alignContent: 'space-between',
+            }}
+          >
+            <Button style={buttonStyle} onPress={_onEditNotes}>
+              <SvgNotesPaper
+                width={20}
+                height={20}
+                style={{ paddingRight: 5 }}
+              />
+              <Trans>Edit notes</Trans>
+            </Button>
+          </View>
+          <View>
+            <Button variant="bare" style={buttonStyle} onPress={onShowMore}>
+              {!showMore ? (
+                <SvgCheveronUp
+                  width={30}
+                  height={30}
+                  style={{ paddingRight: 5 }}
+                />
+              ) : (
+                <SvgCheveronDown
+                  width={30}
+                  height={30}
+                  style={{ paddingRight: 5 }}
+                />
+              )}
+              <Trans>Actions</Trans>
+            </Button>
+          </View>
+          {showMore && (
+            <BudgetMenu
+              getItemStyle={() => defaultMenuItemStyle}
+              onCopyLastMonthAverage={onCopyLastMonthAverage}
+              onSetMonthsAverage={onSetMonthsAverage}
+              onApplyBudgetTemplate={onApplyBudgetTemplate}
+            />
+          )}
         </>
       )}
     </Modal>

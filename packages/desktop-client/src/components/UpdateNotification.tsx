@@ -1,16 +1,16 @@
 import React from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
-import { setAppState, updateApp } from 'loot-core/client/app/appSlice';
+import { Button } from '@actual-app/components/button';
+import { SvgClose } from '@actual-app/components/icons/v1';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
-import { SvgClose } from '../icons/v1';
-import { useSelector, useDispatch } from '../redux';
-import { theme } from '../style';
+import { setAppState, updateApp } from '#app/appSlice';
+import { useDispatch, useSelector } from '#redux';
 
-import { Button } from './common/Button2';
 import { Link } from './common/Link';
-import { Text } from './common/Text';
-import { View } from './common/View';
 
 export function UpdateNotification() {
   const { t } = useTranslation();
@@ -21,7 +21,7 @@ export function UpdateNotification() {
 
   const dispatch = useDispatch();
   const onRestart = () => {
-    dispatch(updateApp());
+    void dispatch(updateApp());
   };
 
   if (updateInfo && showUpdateNotification) {
@@ -45,7 +45,7 @@ export function UpdateNotification() {
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <View style={{ marginRight: 10, fontWeight: 700 }}>
             <Text>
-              {t('App updated to {{version}}', { version: updateInfo.version })}
+              <Trans>App updated to {{ version: updateInfo.version }}</Trans>
             </Text>
           </View>
           <View style={{ flex: 1 }} />
@@ -59,7 +59,7 @@ export function UpdateNotification() {
                   textDecoration: 'underline',
                 }}
               >
-                {t('Restart')}
+                <Trans>Restart</Trans>
               </Link>{' '}
               (
               <Link
@@ -74,7 +74,7 @@ export function UpdateNotification() {
                   )
                 }
               >
-                {t('notes')}
+                <Trans context="release notes">notes</Trans>
               </Link>
               )
               <Button

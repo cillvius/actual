@@ -1,28 +1,29 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import * as monthUtils from 'loot-core/src/shared/months';
-import {
-  type SummaryContent,
-  type SummaryWidget,
-} from 'loot-core/types/models';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
+import * as monthUtils from '@actual-app/core/shared/months';
+import type {
+  SummaryContent,
+  SummaryWidget,
+} from '@actual-app/core/types/models';
 
-import { View } from '../../common/View';
-import { DateRange } from '../DateRange';
-import { LoadingIndicator } from '../LoadingIndicator';
-import { ReportCard } from '../ReportCard';
-import { ReportCardName } from '../ReportCardName';
-import { calculateTimeRange } from '../reportRanges';
-import { summarySpreadsheet } from '../spreadsheets/summary-spreadsheet';
-import { SummaryNumber } from '../SummaryNumber';
-import { useReport } from '../useReport';
+import { DateRange } from '#components/reports/DateRange';
+import { ReportCard } from '#components/reports/ReportCard';
+import { ReportCardName } from '#components/reports/ReportCardName';
+import { ReportCardValueSkeleton } from '#components/reports/ReportCardValueSkeleton';
+import { calculateTimeRange } from '#components/reports/reportRanges';
+import { summarySpreadsheet } from '#components/reports/spreadsheets/summary-spreadsheet';
+import { SummaryNumber } from '#components/reports/SummaryNumber';
+import { useReport } from '#components/reports/useReport';
+import { useLocale } from '#hooks/useLocale';
 
 type SummaryCardProps = {
   widgetId: string;
   isEditing?: boolean;
   meta?: SummaryWidget['meta'];
   onMetaChange: (newMeta: SummaryWidget['meta']) => void;
-  onRemove: () => void;
 };
 
 export function SummaryCard({
@@ -30,14 +31,31 @@ export function SummaryCard({
   isEditing,
   meta = {},
   onMetaChange,
-  onRemove,
 }: SummaryCardProps) {
+  const locale = useLocale();
   const { t } = useTranslation();
-  const [start, end] = calculateTimeRange(meta?.timeFrame, {
-    start: monthUtils.dayFromDate(monthUtils.currentMonth()),
-    end: monthUtils.currentDay(),
-    mode: 'full',
-  });
+  const [latestTransaction, setLatestTransaction] = useState<string>('');
+  const [nameMenuOpen, setNameMenuOpen] = useState(false);
+
+  useEffect(() => {
+    async function fetchLatestTransaction() {
+      const latestTrans = await send('get-latest-transaction');
+      setLatestTransaction(
+        latestTrans ? latestTrans.date : monthUtils.currentDay(),
+      );
+    }
+    void fetchLatestTransaction();
+  }, []);
+
+  const [start, end] = calculateTimeRange(
+    meta?.timeFrame,
+    {
+      start: monthUtils.dayFromDate(monthUtils.currentMonth()),
+      end: monthUtils.currentDay(),
+      mode: 'full',
+    },
+    latestTransaction,
+  );
 
   const content = useMemo(
     () =>
@@ -62,42 +80,20 @@ export function SummaryCard({
         meta?.conditions,
         meta?.conditionsOp,
         content,
+        locale,
       ),
-    [start, end, meta?.conditions, meta?.conditionsOp, content],
+    [start, end, meta?.conditions, meta?.conditionsOp, content, locale],
   );
 
   const data = useReport('summary', params);
 
-  const [nameMenuOpen, setNameMenuOpen] = useState(false);
-
   return (
     <ReportCard
+      widgetId={widgetId}
       isEditing={isEditing}
       disableClick={nameMenuOpen}
       to={`/reports/summary/${widgetId}`}
-      menuItems={[
-        {
-          name: 'rename',
-          text: t('Rename'),
-        },
-        {
-          name: 'remove',
-          text: t('Remove'),
-        },
-      ]}
-      onMenuSelect={item => {
-        switch (item) {
-          case 'rename':
-            setNameMenuOpen(true);
-            break;
-          case 'remove':
-            onRemove();
-            break;
-          default:
-            console.warn(`Unrecognized menu selection: ${item}`);
-            break;
-        }
-      }}
+      onRename={() => setNameMenuOpen(true)}
     >
       <View style={{ flex: 1, overflow: 'hidden' }}>
         <View style={{ flexGrow: 0, flexShrink: 0, padding: 20 }}>
@@ -127,20 +123,14 @@ export function SummaryCard({
           {data ? (
             <SummaryNumber
               value={data?.total ?? 0}
+              contentType={content.type}
               suffix={content.type === 'percentage' ? '%' : ''}
               loading={!data}
               initialFontSize={content.fontSize}
-              fontSizeChanged={newSize => {
-                const newContent = { ...content, fontSize: newSize };
-                onMetaChange({
-                  ...meta,
-                  content: JSON.stringify(newContent),
-                });
-              }}
               animate={isEditing ?? false}
             />
           ) : (
-            <LoadingIndicator />
+            <ReportCardValueSkeleton />
           )}
         </View>
       </View>

@@ -1,40 +1,39 @@
 // @ts-strict-ignore
-import { type CSSProperties } from 'react';
-
+import { styles } from '@actual-app/components/styles';
+import type { CSSProperties } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { send } from '@actual-app/core/platform/client/connection';
+import * as monthUtils from '@actual-app/core/shared/months';
+import {
+  currencyToAmount,
+  integerToCurrency,
+} from '@actual-app/core/shared/util';
+import type { Handlers } from '@actual-app/core/types/handlers';
+import type {
+  CategoryEntity,
+  CategoryGroupEntity,
+} from '@actual-app/core/types/models';
+import type { SyncedPrefs } from '@actual-app/core/types/prefs';
 import { t } from 'i18next';
 
-import { type useSpreadsheet } from 'loot-core/src/client/SpreadsheetProvider';
-import { send } from 'loot-core/src/platform/client/fetch';
-import * as monthUtils from 'loot-core/src/shared/months';
-import { type Handlers } from 'loot-core/src/types/handlers';
-import {
-  type CategoryEntity,
-  type CategoryGroupEntity,
-} from 'loot-core/src/types/models';
-import { type SyncedPrefs } from 'loot-core/src/types/prefs';
-
-import { styles, theme } from '../../style';
-import { type DropPosition } from '../sort';
+import type { DropPosition } from '#components/sort';
+import type { useSpreadsheet } from '#hooks/useSpreadsheet';
 
 import { getValidMonthBounds } from './MonthsContext';
 
 export function addToBeBudgetedGroup(groups: CategoryGroupEntity[]) {
   return [
     {
-      id: 'to-be-budgeted',
-      name: t('To Be Budgeted'),
+      id: 'to-budget',
+      name: t('To Budget'),
       categories: [
         {
-          id: 'to-be-budgeted',
-          name: t('To Be Budgeted'),
-          cat_group: 'to-be-budgeted',
-          group: {
-            id: 'to-be-budgeted',
-            name: t('To Be Budgeted'),
-          },
+          id: 'to-budget',
+          name: t('To Budget'),
+          group: 'to-budget',
         },
       ],
-    },
+    } as CategoryGroupEntity,
     ...groups,
   ];
 }
@@ -43,7 +42,7 @@ export function removeCategoriesFromGroups(
   categoryGroups: CategoryGroupEntity[],
   ...categoryIds: CategoryEntity['id'][]
 ) {
-  if (!categoryIds || categoryIds.length === 0) return categoryGroups;
+  if (categoryIds.length === 0) return categoryGroups;
 
   const categoryIdsSet = new Set(categoryIds);
 
@@ -63,31 +62,44 @@ export function separateGroups(categoryGroups: CategoryGroupEntity[]) {
   ] as const;
 }
 
-export function makeAmountGrey(value: number | string): CSSProperties {
+export function makeAmountGrey(value: number | string | null): CSSProperties {
   return value === 0 || value === '0' || value === '' || value == null
-    ? { color: theme.tableTextSubdued }
+    ? { color: theme.budgetNumberZero }
     : null;
 }
 
 export function makeBalanceAmountStyle(
   value: number,
-  goalValue?: number,
-  budgetedValue?: number,
+  goalValue?: number | null,
+  budgetedValue?: number | null,
 ) {
-  if (value < 0) {
-    return { color: theme.errorText };
+  // Converts an integer currency value to a normalized decimal amount.
+  // First converts the integer to currency format, then to a decimal amount.
+  // Uses integerToCurrency to display the value correctly according to user prefs.
+
+  const normalizeIntegerValue = (val: number | null | undefined) =>
+    typeof val === 'number' ? currencyToAmount(integerToCurrency(val)) : 0;
+
+  const currencyValue = normalizeIntegerValue(value);
+
+  if (currencyValue < 0) {
+    return { color: theme.budgetNumberNegative };
   }
 
   if (goalValue == null) {
-    const greyed = makeAmountGrey(value);
+    const greyed = makeAmountGrey(currencyValue);
     if (greyed) {
       return greyed;
     }
+    return { color: theme.budgetNumberPositive };
   } else {
-    if (budgetedValue < goalValue) {
-      return { color: theme.warningText };
+    const budgetedAmount = normalizeIntegerValue(budgetedValue);
+    const goalAmount = normalizeIntegerValue(goalValue);
+
+    if (budgetedAmount < goalAmount) {
+      return { color: theme.templateNumberUnderFunded };
     }
-    return { color: theme.noticeText };
+    return { color: theme.templateNumberFunded };
   }
 }
 
@@ -99,9 +111,11 @@ export function makeAmountFullStyle(
     zeroColor?: string;
   },
 ) {
-  const positiveColorToUse = colors?.positiveColor || theme.noticeText;
-  const negativeColorToUse = colors?.negativeColor || theme.errorText;
-  const zeroColorToUse = colors?.zeroColor || theme.tableTextSubdued;
+  const positiveColorToUse =
+    colors?.positiveColor || theme.budgetNumberPositive;
+  const negativeColorToUse =
+    colors?.negativeColor || theme.budgetNumberNegative;
+  const zeroColorToUse = colors?.zeroColor || theme.budgetNumberZero;
   return {
     color:
       value < 0
@@ -112,9 +126,9 @@ export function makeAmountFullStyle(
   };
 }
 
-export function findSortDown(
-  arr: CategoryGroupEntity[],
-  pos: DropPosition,
+export function findSortDown<T extends { id: string }>(
+  arr: T[],
+  pos: DropPosition | null,
   targetId: string,
 ) {
   if (pos === 'top') {
@@ -136,9 +150,9 @@ export function findSortDown(
   }
 }
 
-export function findSortUp(
-  arr: CategoryGroupEntity[],
-  pos: DropPosition,
+export function findSortUp<T extends { id: string }>(
+  arr: T[],
+  pos: DropPosition | null,
   targetId: string,
 ) {
   if (pos === 'bottom') {
@@ -170,7 +184,9 @@ export async function prewarmMonth(
   month: string,
 ) {
   const method: keyof Handlers =
-    budgetType === 'report' ? 'tracking-budget-month' : 'envelope-budget-month';
+    budgetType === 'tracking'
+      ? 'tracking-budget-month'
+      : 'envelope-budget-month';
 
   const values = await send(method, { month });
 

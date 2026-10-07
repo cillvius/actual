@@ -1,16 +1,21 @@
 import React from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { type TFunction } from 'i18next';
+import { Menu } from '@actual-app/components/menu';
+import { Select } from '@actual-app/components/select';
+import type { SelectOption } from '@actual-app/components/select';
+import { Text } from '@actual-app/components/text';
+import type { TFunction } from 'i18next';
 
-import { useGlobalPref } from '../../hooks/useGlobalPref';
-import { availableLanguages, setI18NextLanguage } from '../../i18n';
-import { Link } from '../common/Link';
-import { Menu } from '../common/Menu';
-import { Select, type SelectOption } from '../common/Select';
-import { Text } from '../common/Text';
+import { Link } from '#components/common/Link';
+import { useGlobalPref } from '#hooks/useGlobalPref';
+import { availableLanguages, setI18NextLanguage } from '#i18n';
 
 import { Setting } from './UI';
+
+const languageDisplayNameOverride: { [key: string]: string } = {
+  'pt-BR': 'Português (Brasil)',
+};
 
 const languageOptions = (t: TFunction): SelectOption[] =>
   [
@@ -19,9 +24,11 @@ const languageOptions = (t: TFunction): SelectOption[] =>
   ].concat(
     availableLanguages.map(lang => [
       lang,
-      new Intl.DisplayNames([lang], {
-        type: 'language',
-      }).of(lang) || lang,
+      lang in languageDisplayNameOverride
+        ? languageDisplayNameOverride[lang]
+        : new Intl.DisplayNames([lang], {
+            type: 'language',
+          }).of(lang) || lang,
     ]),
   );
 
@@ -59,7 +66,7 @@ export function LanguageSettings() {
               variant="external"
               to={
                 'https://hosted.weblate.org/projects/actualbudget/actual/' +
-                language
+                (language ?? '')
               }
               linkColor="purple"
             >
@@ -73,7 +80,7 @@ export function LanguageSettings() {
             the instructions{' '}
             <Link
               variant="external"
-              to="https://actualbudget.org/docs/translations"
+              to="https://actualbudget.org/docs/install/build-from-source#translations"
             >
               here
             </Link>{' '}

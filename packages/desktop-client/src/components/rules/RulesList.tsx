@@ -1,9 +1,8 @@
 // @ts-strict-ignore
 import React from 'react';
 
-import { type RuleEntity } from 'loot-core/src/types/models';
-
-import { View } from '../common/View';
+import { View } from '@actual-app/components/view';
+import type { RuleEntity } from '@actual-app/core/types/models';
 
 import { RuleRow } from './RuleRow';
 

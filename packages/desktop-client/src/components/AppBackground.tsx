@@ -1,15 +1,15 @@
 import React from 'react';
-import { useTransition, animated } from 'react-spring';
+import { animated, useTransition } from 'react-spring';
 
+import { Block } from '@actual-app/components/block';
+import { AnimatedLoading } from '@actual-app/components/icons/AnimatedLoading';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 import { css } from '@emotion/css';
 
-import { AnimatedLoading } from '../icons/AnimatedLoading';
-import { useSelector } from '../redux';
-import { theme } from '../style';
+import { useSelector } from '#redux';
 
 import { Background } from './Background';
-import { Block } from './common/Block';
-import { View } from './common/View';
 
 type AppBackgroundProps = {
   isLoading?: boolean;
@@ -22,7 +22,6 @@ export function AppBackground({ isLoading }: AppBackgroundProps) {
     from: { opacity: 0, transform: 'translateY(-100px)' },
     enter: { opacity: 1, transform: 'translateY(0)' },
     leave: { opacity: 0, transform: 'translateY(100px)' },
-    unique: true,
   });
 
   return (

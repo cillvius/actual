@@ -1,13 +1,17 @@
-import { type NavigateFunction } from 'react-router-dom';
+import type { NavigateFunction } from 'react-router';
 
-import * as monthUtils from 'loot-core/src/shared/months';
-import { type AccountEntity } from 'loot-core/types/models/account';
-import { type CategoryEntity } from 'loot-core/types/models/category';
-import { type CategoryGroupEntity } from 'loot-core/types/models/category-group';
-import { type balanceTypeOpType } from 'loot-core/types/models/reports';
-import { type RuleConditionEntity } from 'loot-core/types/models/rule';
+import * as monthUtils from '@actual-app/core/shared/months';
+import { makeExactTagSetQueryFilter } from '@actual-app/core/shared/tags';
+import type {
+  AccountEntity,
+  balanceTypeOpType,
+  CategoryEntity,
+  CategoryGroupEntity,
+  RuleConditionEntity,
+} from '@actual-app/core/types/models';
+import { t } from 'i18next';
 
-import { ReportOptions } from '../ReportOptions';
+import { ReportOptions } from '#components/reports/ReportOptions';
 
 type showActivityProps = {
   navigate: NavigateFunction;
@@ -20,9 +24,12 @@ type showActivityProps = {
   type: string;
   startDate: string;
   endDate?: string;
-  field?: string;
-  id?: string;
+  field?: string; // 'group' becomes a category_group filter
+  id?: string | string[]; // changed: supports array for oneOf
+  uncategorizedId?: 'off_budget' | 'transfer' | 'other' | 'all';
   interval?: string;
+  bucketTagNames?: string[];
+  scopeTagNames?: string[];
 };
 
 export function showActivity({
@@ -38,7 +45,10 @@ export function showActivity({
   endDate,
   field,
   id,
+  uncategorizedId,
   interval = 'Day',
+  bucketTagNames,
+  scopeTagNames = [],
 }: showActivityProps) {
   const isOutFlow =
     balanceTypeOp === 'totalDebts' || type === 'debts' ? true : false;
@@ -50,10 +60,50 @@ export function showActivity({
       : (((ReportOptions.intervalMap.get(interval) || 'Day').toLowerCase() +
           'FromDate') as 'dayFromDate' | 'monthFromDate' | 'yearFromDate');
   const isDateOp = interval === 'Weekly' || type !== 'time';
+  const drilldownFilter =
+    field === 'tag' && bucketTagNames
+      ? {
+          field: 'notes',
+          op: 'hasTags',
+          value: bucketTagNames.map(tag => `#${tag}`).join(' '),
+          type: 'string',
+          customName:
+            bucketTagNames.length === 0
+              ? t('Tag: Untagged')
+              : t('Tag: {{tags}}', {
+                  tags: bucketTagNames.map(tag => `#${tag}`).join(' + '),
+                }),
+          queryFilter: makeExactTagSetQueryFilter(
+            bucketTagNames,
+            scopeTagNames,
+          ),
+        }
+      : field === 'category' && uncategorizedId === 'transfer'
+        ? {
+            field: 'transfer',
+            op: 'is',
+            value: true,
+            type: 'boolean',
+          }
+        : field === 'group'
+          ? !uncategorizedId &&
+            id && {
+              field: 'category_group',
+              op: 'is',
+              value: id,
+              type: 'id',
+            }
+          : id && {
+              // changed: use oneOf when id is an array, is when it's a string
+              field,
+              op: Array.isArray(id) ? 'oneOf' : 'is',
+              value: id,
+              type: 'id',
+            };
 
   const filterConditions = [
     ...filters,
-    id && { field, op: 'is', value: id, type: 'id' },
+    drilldownFilter,
     {
       field: 'date',
       op: isDateOp ? 'gte' : 'is',
@@ -68,7 +118,7 @@ export function showActivity({
     },
     !(
       ['netAssets', 'netDebts'].includes(balanceTypeOp) ||
-      (balanceTypeOp === 'totalTotals' &&
+      (['totalTotals', 'totalBudgeted'].includes(balanceTypeOp) &&
         (type === 'totals' || type === 'time'))
     ) && {
       field: 'amount',
@@ -95,10 +145,11 @@ export function showActivity({
         type: 'id',
       },
   ].filter(f => f);
-  navigate('/accounts', {
-    state: {
-      goBack: true,
-      filterConditions,
-    },
+
+  void navigate(balanceTypeOp === 'totalBudgeted' ? '/budget' : '/accounts', {
+    state:
+      balanceTypeOp === 'totalBudgeted'
+        ? { goBack: true }
+        : { goBack: true, filterConditions },
   });
 }

@@ -1,7 +1,14 @@
+import { format as formatDate_ } from '@actual-app/core/shared/months';
+import { looselyParseAmount } from '@actual-app/core/shared/util';
 import * as d from 'date-fns';
 
-import { format as formatDate_ } from 'loot-core/src/shared/months';
-import { looselyParseAmount } from 'loot-core/src/shared/util';
+export type DateFormat =
+  | 'yyyy mm dd'
+  | 'yy mm dd'
+  | 'mm dd yyyy'
+  | 'mm dd yy'
+  | 'dd mm yyyy'
+  | 'dd mm yy';
 
 export const dateFormats = [
   { format: 'yyyy mm dd', label: 'YYYY MM DD' },
@@ -10,18 +17,16 @@ export const dateFormats = [
   { format: 'mm dd yy', label: 'MM DD YY' },
   { format: 'dd mm yyyy', label: 'DD MM YYYY' },
   { format: 'dd mm yy', label: 'DD MM YY' },
-] as const;
+] as const satisfies Array<{ format: DateFormat; label: string }>;
+
+export function isDateFormat(format: string): format is DateFormat {
+  return dateFormats.some(f => f.format === format);
+}
 
 export function parseDate(
   str: string | number | null | Array<unknown> | object,
-  order:
-    | 'yyyy mm dd'
-    | 'yy mm dd'
-    | 'mm dd yyyy'
-    | 'mm dd yy'
-    | 'dd mm yyyy'
-    | 'dd mm yy',
-) {
+  order: DateFormat,
+): string | null {
   if (typeof str !== 'string') {
     return null;
   }
@@ -40,7 +45,7 @@ export function parseDate(
       .replace(/\bjun(\.|e)?\b/i, '06')
       .replace(/\bjul(\.|y)?\b/i, '07')
       .replace(/\baug(\.|ust)?\b/i, '08')
-      .replace(/\bsep(\.|tember)?\b/i, '09')
+      .replace(/\bsep(\.|t\.?|tember)?\b/i, '09')
       .replace(/\boct(\.|ober)?\b/i, '10')
       .replace(/\bnov(\.|ember)?\b/i, '11')
       .replace(/\bdec(\.|ember)?\b/i, '12')
@@ -113,7 +118,7 @@ export function formatDate(
   }
   try {
     return formatDate_(date, format);
-  } catch (e) {}
+  } catch {}
   return null;
 }
 
@@ -126,8 +131,29 @@ export type ImportTransaction = {
   amount: number;
   inflow: number;
   outflow: number;
-  inOut: number;
-} & Record<string, string>;
+  inOut: string;
+  imported_payee?: string;
+  payee_name?: string;
+  notes?: string;
+  category?: string;
+  date?: string;
+} & Record<string, string | number | boolean>;
+
+type ImportCategory = {
+  id: string;
+  name: string;
+};
+
+export function parseCategoryFields(
+  trans: Pick<ImportTransaction, 'category'>,
+  categories: ImportCategory[],
+) {
+  const match = categories.find(
+    category =>
+      category.id !== trans.category && category.name === trans.category,
+  );
+  return match?.id ?? null;
+}
 
 export type FieldMapping = {
   date: string | null;
@@ -155,13 +181,13 @@ export function applyFieldMappings(
   result.ignored = transaction.ignored;
   result.selected = transaction.selected;
   result.selected_merge = transaction.selected_merge;
+  result.tombstone = transaction.tombstone;
   return result as ImportTransaction;
 }
 
 function parseAmount(
   amount: number | string | undefined | null,
   mapper: (parsed: number) => number,
-  multiplier: number,
 ) {
   if (amount == null) {
     return null;
@@ -174,59 +200,116 @@ function parseAmount(
     return null;
   }
 
-  return mapper(parsed) * multiplier;
+  return mapper(parsed);
 }
 
 export function parseAmountFields(
   trans: Partial<ImportTransaction>,
   splitMode: boolean,
   inOutMode: boolean,
-  outValue: number,
+  outValue: string,
   flipAmount: boolean,
   multiplierAmount: string,
 ) {
   const multiplier = parseFloat(multiplierAmount) || 1.0;
 
-  if (splitMode) {
+  /** Keep track of the transaction amount as inflow and outflow.
+   *
+   * Inflow/outflow is taken from a positive/negative transaction amount
+   * respectively, or the inflow/outflow fields if split mode is enabled.
+   */
+  const value = {
+    outflow: 0,
+    inflow: 0,
+  };
+
+  // Determine the base value of the transaction from the amount or inflow/outflow fields
+  if (splitMode && !inOutMode) {
     // Split mode is a little weird; first we look for an outflow and
     // if that has a value, we never want to show a number in the
     // inflow. Same for `amount`; we choose outflow first and then inflow
-    const outflow = parseAmount(trans.outflow, n => -Math.abs(n), multiplier);
-    const inflow = outflow
+    value.outflow = parseAmount(trans.outflow, n => -Math.abs(n)) || 0;
+    value.inflow = value.outflow
       ? 0
-      : parseAmount(trans.inflow, n => Math.abs(n), multiplier);
-
-    return {
-      amount: outflow || inflow,
-      outflow,
-      inflow,
-    };
+      : parseAmount(trans.inflow, n => Math.abs(n)) || 0;
+  } else {
+    const amount = parseAmount(trans.amount, n => n) || 0;
+    if (amount >= 0) value.inflow = amount;
+    else value.outflow = amount;
   }
+
+  // Apply in/out
   if (inOutMode) {
+    // The 'In/Out' field of a transaction will tell us
+    // whether the transaction value is inflow or outflow.
+    const transactionValue = value.outflow || value.inflow;
+    if (trans.inOut === outValue) {
+      value.outflow = -Math.abs(transactionValue);
+      value.inflow = 0;
+    } else {
+      value.inflow = Math.abs(transactionValue);
+      value.outflow = 0;
+    }
+  }
+
+  // Apply flip
+  if (flipAmount) {
+    const oldInflow = value.inflow;
+    value.inflow = Math.abs(value.outflow);
+    value.outflow = -Math.abs(oldInflow);
+  }
+
+  // Apply multiplier
+  value.inflow *= multiplier;
+  value.outflow *= multiplier;
+
+  if (splitMode) {
     return {
-      amount: parseAmount(
-        trans.amount,
-        n => (trans.inOut === outValue ? Math.abs(n) * -1 : Math.abs(n)),
-        multiplier,
-      ),
+      amount: value.outflow || value.inflow,
+      outflow: value.outflow,
+      inflow: value.inflow,
+    };
+  } else {
+    return {
+      amount: value.outflow || value.inflow,
       outflow: null,
       inflow: null,
     };
   }
-  return {
-    amount: parseAmount(
-      trans.amount,
-      n => (flipAmount ? n * -1 : n),
-      multiplier,
-    ),
-    outflow: null,
-    inflow: null,
-  };
+}
+
+export function filterByStartDate(
+  transactions: ImportTransaction[],
+  startDate: string,
+  isPreParsedDate: boolean,
+  fieldMappings: FieldMapping | null,
+  parseDateFormat: DateFormat | null,
+): ImportTransaction[] {
+  if (!startDate) return transactions;
+  return transactions.filter(trans => {
+    const mapped = fieldMappings
+      ? applyFieldMappings(trans, fieldMappings)
+      : trans;
+    const date = isPreParsedDate
+      ? (mapped.date ?? null)
+      : parseDateFormat
+        ? parseDate(mapped.date ?? null, parseDateFormat)
+        : null;
+    // Keep transactions with unparseable dates (they'll error later in the normal flow)
+    return date == null || date >= startDate;
+  });
 }
 
 export function stripCsvImportTransaction(transaction: ImportTransaction) {
-  const { existing, ignored, selected, selected_merge, trx_id, ...trans } =
-    transaction;
+  const {
+    existing: _existing,
+    ignored: _ignored,
+    selected: _selected,
+    selected_merge: _selected_merge,
+    trx_id: _trx_id,
+    tombstone: _tombstone,
+    ...trans
+  } = transaction;
 
   return trans;
 }

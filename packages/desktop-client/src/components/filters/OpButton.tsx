@@ -1,11 +1,11 @@
-import React, { type CSSProperties } from 'react';
+import React from 'react';
+import type { CSSProperties } from 'react';
 
+import { Button } from '@actual-app/components/button';
+import { theme } from '@actual-app/components/theme';
 import { css } from '@emotion/css';
 
-import { friendlyOp } from 'loot-core/src/shared/rules';
-
-import { theme } from '../../style';
-import { Button } from '../common/Button2';
+import { friendlyOp } from '#util/rule';
 
 type OpButtonProps = {
   op: string;
@@ -21,7 +21,6 @@ export function OpButton({ op, isSelected, style, onPress }: OpButtonProps) {
       style={style}
       className={css({
         backgroundColor: theme.pillBackground,
-        marginBottom: 5,
         ...(isSelected && {
           color: theme.buttonNormalSelectedText,
           '&,:hover,:active': {

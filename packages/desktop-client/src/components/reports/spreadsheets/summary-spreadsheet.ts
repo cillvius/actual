@@ -1,14 +1,15 @@
+import { send } from '@actual-app/core/platform/client/connection';
+import * as monthUtils from '@actual-app/core/shared/months';
+import { q } from '@actual-app/core/shared/query';
+import type {
+  RuleConditionEntity,
+  SummaryContent,
+} from '@actual-app/core/types/models';
 import * as d from 'date-fns';
+import type { Locale } from 'date-fns';
 
-import { runQuery } from 'loot-core/src/client/query-helpers';
-import { type useSpreadsheet } from 'loot-core/src/client/SpreadsheetProvider';
-import { send } from 'loot-core/src/platform/client/fetch';
-import * as monthUtils from 'loot-core/src/shared/months';
-import { q } from 'loot-core/src/shared/query';
-import {
-  type SummaryContent,
-  type RuleConditionEntity,
-} from 'loot-core/types/models';
+import type { useSpreadsheet } from '#hooks/useSpreadsheet';
+import { aqlQuery } from '#queries/aqlQuery';
 
 export function summarySpreadsheet(
   start: string,
@@ -16,6 +17,7 @@ export function summarySpreadsheet(
   conditions: RuleConditionEntity[] = [],
   conditionsOp: 'and' | 'or' = 'and',
   summaryContent: SummaryContent,
+  locale: Locale,
 ) {
   return async (
     spreadsheet: ReturnType<typeof useSpreadsheet>,
@@ -48,7 +50,10 @@ export function summarySpreadsheet(
       );
 
       endDay = d.parse(
-        monthUtils.lastDayOfMonth(end),
+        monthUtils.getMonth(end) ===
+          monthUtils.getMonth(monthUtils.currentDay())
+          ? monthUtils.currentDay()
+          : monthUtils.lastDayOfMonth(end),
         'yyyy-MM-dd',
         new Date(),
       );
@@ -105,29 +110,32 @@ export function summarySpreadsheet(
 
     let query = makeRootQuery();
 
-    if (summaryContent.type === 'avgPerMonth') {
+    if (
+      summaryContent.type === 'avgPerMonth' ||
+      summaryContent.type === 'avgPerYear'
+    ) {
       query = query.groupBy(['date']);
     }
 
     let data;
     try {
-      data = await runQuery(query);
+      data = await aqlQuery(query);
     } catch (error) {
       console.error('Error executing query:', error);
       return;
     }
 
     const dateRanges = {
-      fromRange: d.format(startDay, 'MMM yy'),
-      toRange: d.format(endDay, 'MMM yy'),
+      fromRange: d.format(startDay, 'MMM yy', { locale }),
+      toRange: d.format(endDay, 'MMM yy', { locale }),
     };
 
     switch (summaryContent.type) {
       case 'sum':
         setData({
           ...dateRanges,
-          total: (data.data[0]?.amount ?? 0) / 100,
-          dividend: (data.data[0]?.amount ?? 0) / 100,
+          total: data.data[0]?.amount ?? 0,
+          dividend: data.data[0]?.amount ?? 0,
           divisor: 0,
         });
         break;
@@ -136,10 +144,10 @@ export function summarySpreadsheet(
         setData({
           ...dateRanges,
           total:
-            ((data.data[0]?.count ?? 0)
+            (data.data[0]?.count ?? 0)
               ? (data.data[0]?.amount ?? 0) / data.data[0].count
-              : 0) / 100,
-          dividend: (data.data[0]?.amount ?? 0) / 100,
+              : 0,
+          dividend: data.data[0]?.amount ?? 0,
           divisor: data.data[0].count,
         });
         break;
@@ -147,6 +155,14 @@ export function summarySpreadsheet(
       case 'avgPerMonth': {
         const months = getOneDatePerMonth(startDay, endDay);
         setData({ ...dateRanges, ...calculatePerMonth(data.data, months) });
+        break;
+      }
+
+      case 'avgPerYear': {
+        setData({
+          ...dateRanges,
+          ...calculatePerYear(data.data, startDay, endDay),
+        });
         break;
       }
 
@@ -196,13 +212,44 @@ function calculatePerMonth(
     amount: monthlyData[d.format(m, 'yyyy-MM')] || 0,
   }));
 
+  const lastMonth = months.at(-1)!;
+  const dayOfMonth = lastMonth.getDate();
+  const daysInMonth = monthUtils.getDay(monthUtils.lastDayOfMonth(lastMonth));
+  const numMonths = months.length - 1 + dayOfMonth / daysInMonth;
+
   const totalAmount = monthsSum.reduce((sum, month) => sum + month.amount, 0);
-  const averageAmountPerMonth = totalAmount / months.length;
+  const averageAmountPerMonth = totalAmount / numMonths;
 
   return {
-    total: averageAmountPerMonth / 100,
-    dividend: totalAmount / 100,
-    divisor: months.length,
+    total: averageAmountPerMonth,
+    dividend: totalAmount,
+    divisor: numMonths,
+  };
+}
+
+function calculatePerYear(
+  data: Array<{
+    date: string;
+    amount: number;
+    count: number;
+  }>,
+  startDate: Date,
+  endDate: Date,
+) {
+  if (!data.length) {
+    return { total: 0, dividend: 0, divisor: 0 };
+  }
+
+  const totalAmount = data.reduce((sum, day) => sum + day.amount, 0);
+  const totalDays = d.differenceInDays(endDate, startDate) + 1;
+  const numYears = totalDays / 365.25;
+
+  const averageAmountPerYear = totalAmount / numYears;
+
+  return {
+    total: averageAmountPerYear,
+    dividend: totalAmount,
+    divisor: numYears,
   };
 }
 
@@ -269,7 +316,7 @@ async function calculatePercentage(
 
   let divisorData;
   try {
-    divisorData = (await runQuery(query)) as { data: { amount: number }[] };
+    divisorData = (await aqlQuery(query)) as { data: { amount: number }[] };
   } catch (error) {
     console.error('Error executing divisor query:', error);
     return {
@@ -284,7 +331,7 @@ async function calculatePercentage(
   const dividend = data.reduce((prev, ac) => prev + (ac?.amount ?? 0), 0);
   return {
     total: Math.round(((dividend ?? 0) / (divisorValue ?? 1)) * 10000) / 100,
-    divisor: (divisorValue ?? 0) / 100,
-    dividend: (dividend ?? 0) / 100,
+    divisor: divisorValue ?? 0,
+    dividend: dividend ?? 0,
   };
 }

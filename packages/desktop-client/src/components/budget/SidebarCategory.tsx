@@ -1,21 +1,23 @@
 // @ts-strict-ignore
-import React, { type CSSProperties, type Ref, useRef } from 'react';
+import React, { useRef } from 'react';
+import type { CSSProperties, Ref } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import {
-  type CategoryGroupEntity,
-  type CategoryEntity,
-} from 'loot-core/src/types/models';
+import { Button } from '@actual-app/components/button';
+import { SvgCheveronDown } from '@actual-app/components/icons/v1';
+import { TextOneLine } from '@actual-app/components/text-one-line';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import type {
+  CategoryEntity,
+  CategoryGroupEntity,
+} from '@actual-app/core/types/models';
 
-import { useContextMenu } from '../../hooks/useContextMenu';
-import { SvgCheveronDown } from '../../icons/v1';
-import { theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Menu } from '../common/Menu';
-import { Popover } from '../common/Popover';
-import { View } from '../common/View';
-import { NotesButton } from '../NotesButton';
-import { InputCell } from '../table';
+import { InputCell } from '#components/table';
+import { useContextMenu } from '#hooks/useContextMenu';
+import { useGlobalPref } from '#hooks/useGlobalPref';
+
+import { SidebarCategoryButtons } from './SidebarCategoryButtons';
 
 type SidebarCategoryProps = {
   innerRef: Ref<HTMLDivElement>;
@@ -23,15 +25,23 @@ type SidebarCategoryProps = {
   categoryGroup?: CategoryGroupEntity;
   dragPreview?: boolean;
   dragging?: boolean;
-  editing: boolean;
+  goalsShown?: boolean;
   style?: CSSProperties;
   borderColor?: string;
   isLast?: boolean;
-  onEditName: (id: string) => void;
+  onEditName: (id: CategoryEntity['id']) => void;
   onSave: (category: CategoryEntity) => void;
-  onDelete: (id: string) => Promise<void>;
   onHideNewCategory?: () => void;
-};
+} & (
+  | {
+      editing: true;
+      onDelete?: never;
+    }
+  | {
+      editing: boolean;
+      onDelete: (id: CategoryEntity['id']) => void;
+    }
+);
 
 export function SidebarCategory({
   innerRef,
@@ -40,6 +50,7 @@ export function SidebarCategory({
   dragPreview,
   dragging,
   editing,
+  goalsShown = false,
   style,
   isLast,
   onEditName,
@@ -48,11 +59,31 @@ export function SidebarCategory({
   onHideNewCategory,
 }: SidebarCategoryProps) {
   const { t } = useTranslation();
+  const [categoryExpandedStatePref] = useGlobalPref('categoryExpandedState');
+  const categoryExpandedState = categoryExpandedStatePref ?? 0;
 
   const temporary = category.id === 'new';
-  const { setMenuOpen, menuOpen, handleContextMenu, resetPosition, position } =
-    useContextMenu();
   const triggerRef = useRef(null);
+  const { handleContextMenu } = useContextMenu({
+    triggerRef,
+    items: [
+      {
+        name: 'rename',
+        text: t('Rename'),
+        onClick: () => onEditName(category.id),
+      },
+      !categoryGroup?.hidden && {
+        name: 'toggle-visibility',
+        text: category.hidden ? t('Show') : t('Hide'),
+        onClick: () => onSave({ ...category, hidden: !category.hidden }),
+      },
+      {
+        name: 'delete',
+        text: t('Delete'),
+        onClick: () => onDelete(category.id),
+      },
+    ],
+  });
 
   const displayed = (
     <View
@@ -66,28 +97,14 @@ export function SidebarCategory({
         height: 20,
       }}
       ref={triggerRef}
-      onContextMenu={handleContextMenu}
     >
-      <div
-        data-testid="category-name"
-        style={{
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          minWidth: 0,
-        }}
-      >
-        {category.name}
-      </div>
+      <TextOneLine data-testid="category-name">{category.name}</TextOneLine>
       <View style={{ flexShrink: 0, marginLeft: 5 }}>
         <Button
           variant="bare"
           className="hover-visible"
           style={{ color: 'currentColor', padding: 3 }}
-          onPress={() => {
-            resetPosition();
-            setMenuOpen(true);
-          }}
+          onPress={handleContextMenu}
         >
           <SvgCheveronDown
             width={14}
@@ -95,46 +112,12 @@ export function SidebarCategory({
             style={{ color: 'currentColor' }}
           />
         </Button>
-
-        <Popover
-          triggerRef={triggerRef}
-          placement="bottom start"
-          isOpen={menuOpen}
-          onOpenChange={() => setMenuOpen(false)}
-          style={{ width: 200, margin: 1 }}
-          isNonModal
-          {...position}
-        >
-          <Menu
-            onMenuSelect={type => {
-              if (type === 'rename') {
-                onEditName(category.id);
-              } else if (type === 'delete') {
-                onDelete(category.id);
-              } else if (type === 'toggle-visibility') {
-                onSave({ ...category, hidden: !category.hidden });
-              }
-              setMenuOpen(false);
-            }}
-            items={[
-              { name: 'rename', text: 'Rename' },
-              !categoryGroup?.hidden && {
-                name: 'toggle-visibility',
-                text: category.hidden ? 'Show' : 'Hide',
-              },
-              { name: 'delete', text: 'Delete' },
-            ]}
-          />
-        </Popover>
       </View>
-      <View style={{ flex: 1 }} />
-      <View style={{ flexShrink: 0 }}>
-        <NotesButton
-          id={category.id}
-          style={dragging && { color: 'currentColor' }}
-          defaultColor={theme.pageTextLight}
-        />
-      </View>
+      <SidebarCategoryButtons
+        category={category}
+        dragging={dragging}
+        goalsShown={goalsShown}
+      />
     </View>
   );
 
@@ -142,7 +125,7 @@ export function SidebarCategory({
     <View
       innerRef={innerRef}
       style={{
-        width: 200,
+        width: 200 + 100 * categoryExpandedState,
         overflow: 'hidden',
         '& .hover-visible': {
           display: 'none',
@@ -153,11 +136,11 @@ export function SidebarCategory({
               display: 'flex',
             },
           }),
-        ...(dragging && { color: theme.formInputTextPlaceholderSelected }),
+        ...(dragging && { color: theme.pageTextSubdued }), //always visible color
         // The zIndex here forces the the view on top of a row below
         // it that may be "collapsed" and show a border on top
         ...(dragPreview && {
-          backgroundColor: theme.tableBackground,
+          backgroundColor: theme.budgetCurrentMonth,
           zIndex: 10000,
           borderRadius: 6,
           overflow: 'hidden',

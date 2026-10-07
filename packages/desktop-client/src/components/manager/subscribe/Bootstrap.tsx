@@ -2,20 +2,20 @@
 import React, { useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { createBudget } from 'loot-core/src/client/actions/budgets';
-import { send } from 'loot-core/src/platform/client/fetch';
+import { Button } from '@actual-app/components/button';
+import { Paragraph } from '@actual-app/components/paragraph';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
 
-import { useNavigate } from '../../../hooks/useNavigate';
-import { useDispatch } from '../../../redux';
-import { theme } from '../../../style';
-import { Button } from '../../common/Button2';
-import { Link } from '../../common/Link';
-import { Paragraph } from '../../common/Paragraph';
-import { Text } from '../../common/Text';
-import { View } from '../../common/View';
-import { useRefreshLoginMethods } from '../../ServerContext';
+import { createBudget } from '#budgetfiles/budgetfilesSlice';
+import { Link } from '#components/common/Link';
+import { useRefreshLoginMethods } from '#components/ServerContext';
+import { useNavigate } from '#hooks/useNavigate';
+import { useDispatch } from '#redux';
 
-import { useBootstrapped, Title } from './common';
+import { Title, useBootstrapped } from './common';
 import { ConfirmPasswordForm } from './ConfirmPasswordForm';
 
 export function Bootstrap() {
@@ -54,7 +54,7 @@ export function Bootstrap() {
       setError(error);
     } else {
       await refreshLoginMethods();
-      navigate('/login');
+      void navigate('/login');
     }
   }
 
@@ -72,7 +72,7 @@ export function Bootstrap() {
       <Paragraph style={{ fontSize: 16, color: theme.pageTextDark }}>
         <Trans>
           Actual is a super fast privacy-focused app for managing your finances.
-          To secure your data, you’ll need to set a password for your server.
+          To secure your data, you'll need to set a password for your server.
         </Trans>
       </Paragraph>
 
@@ -82,18 +82,18 @@ export function Bootstrap() {
           <Link variant="external" to="https://actualbudget.org/docs/tour/">
             our tour
           </Link>{' '}
-          in a new tab for some guidance on what to do when you’ve set your
+          in a new tab for some guidance on what to do when you've set your
           password.
         </Trans>
       </Paragraph>
 
       {error && (
         <Text
+          size="large"
           style={{
             marginTop: 20,
             color: theme.errorText,
             borderRadius: 4,
-            fontSize: 15,
           }}
         >
           {getErrorMessage(error)}

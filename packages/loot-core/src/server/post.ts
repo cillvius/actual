@@ -1,19 +1,26 @@
 // @ts-strict-ignore
-import { fetch } from '../platform/server/fetch';
+import { fetch } from '#platform/server/fetch';
+import { logger } from '#platform/server/log';
+import * as Platform from '#shared/platform';
 
 import { PostError } from './errors';
-import * as Platform from './platform';
 
-function throwIfNot200(res, text) {
+export function getServerErrorReason(error) {
+  return error.reason === 'unauthorized' && error.details === 'token-not-found'
+    ? 'token-expired'
+    : error.reason;
+}
+
+function throwIfNot200(res: Response, text: string) {
   if (res.status !== 200) {
     if (res.status === 500) {
       throw new PostError(res.status === 500 ? 'internal' : text);
     }
 
-    const contentType = res.headers.get('Content-Type');
+    const contentType = res.headers.get('Content-Type') ?? '';
     if (contentType.toLowerCase().indexOf('application/json') !== -1) {
       const json = JSON.parse(text);
-      throw new PostError(json.reason);
+      throw new PostError(getServerErrorReason(json));
     }
 
     // Actual Sync Server may be exposed via a tunnel (e.g. ngrok). Tunnel errors should be treated as network errors.
@@ -32,14 +39,34 @@ function throwIfNot200(res, text) {
   }
 }
 
-export async function post(url, data, headers = {}, timeout = null) {
-  let text;
-  let res;
+export async function post(
+  url: RequestInfo,
+  data: unknown,
+  headers = {},
+  timeout: number | null = null,
+  // Optional caller-provided abort signal. Used by Enable Banking poll
+  // cancellation so the user can interrupt the 5-minute long-poll.
+  externalSignal?: AbortSignal | null,
+) {
+  let text: string;
+  let res: Response;
+
+  const controller = new AbortController();
+  const timeoutId =
+    timeout != null ? setTimeout(() => controller.abort(), timeout) : undefined;
+
+  // If an external signal is provided, abort our controller when it fires
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort);
+    }
+  }
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-    const signal = timeout ? controller.signal : null;
+    const signal = timeout != null || externalSignal ? controller.signal : null;
     res = await fetch(url, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -49,23 +76,34 @@ export async function post(url, data, headers = {}, timeout = null) {
         'Content-Type': 'application/json',
       },
     });
-    clearTimeout(timeoutId);
     text = await res.text();
   } catch (err) {
-    throw new PostError('network-failure');
+    if (
+      err instanceof Error &&
+      err.name === 'AbortError' &&
+      externalSignal?.aborted
+    ) {
+      throw new PostError('aborted');
+    }
+    throw new PostError('network-failure', undefined, { cause: err });
+  } finally {
+    if (timeoutId != null) clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 
   throwIfNot200(res, text);
 
+  let responseData;
+
   try {
-    res = JSON.parse(text);
-  } catch (err) {
+    responseData = JSON.parse(text);
+  } catch {
     // Something seriously went wrong. TODO handle errors
     throw new PostError('parse-json', { meta: text });
   }
 
-  if (res.status !== 'ok') {
-    console.log(
+  if (responseData.status !== 'ok') {
+    logger.log(
       'API call failed: ' +
         url +
         '\nData: ' +
@@ -74,10 +112,12 @@ export async function post(url, data, headers = {}, timeout = null) {
         JSON.stringify(res, null, 2),
     );
 
-    throw new PostError(res.description || res.reason || 'unknown');
+    throw new PostError(
+      responseData.description || responseData.reason || 'unknown',
+    );
   }
 
-  return res.data;
+  return responseData.data;
 }
 
 export async function del(url, data, headers = {}, timeout = null) {
@@ -100,20 +140,20 @@ export async function del(url, data, headers = {}, timeout = null) {
     clearTimeout(timeoutId);
     text = await res.text();
   } catch (err) {
-    throw new PostError('network-failure');
+    throw new PostError('network-failure', undefined, { cause: err });
   }
 
   throwIfNot200(res, text);
 
   try {
     res = JSON.parse(text);
-  } catch (err) {
+  } catch {
     // Something seriously went wrong. TODO handle errors
     throw new PostError('parse-json', { meta: text });
   }
 
   if (res.status !== 'ok') {
-    console.log(
+    logger.log(
       'API call failed: ' +
         url +
         '\nData: ' +
@@ -148,20 +188,20 @@ export async function patch(url, data, headers = {}, timeout = null) {
     clearTimeout(timeoutId);
     text = await res.text();
   } catch (err) {
-    throw new PostError('network-failure');
+    throw new PostError('network-failure', undefined, { cause: err });
   }
 
   throwIfNot200(res, text);
 
   try {
     res = JSON.parse(text);
-  } catch (err) {
+  } catch {
     // Something seriously went wrong. TODO handle errors
     throw new PostError('parse-json', { meta: text });
   }
 
   if (res.status !== 'ok') {
-    console.log(
+    logger.log(
       'API call failed: ' +
         url +
         '\nData: ' +
@@ -181,15 +221,14 @@ export async function postBinary(url, data, headers) {
   try {
     res = await fetch(url, {
       method: 'POST',
-      body: Platform.isWeb ? data : Buffer.from(data),
+      body: Platform.isBrowser ? data : Buffer.from(data),
       headers: {
-        'Content-Length': data.length,
         'Content-Type': 'application/actual-sync',
         ...headers,
       },
     });
   } catch (err) {
-    throw new PostError('network-failure');
+    throw new PostError('network-failure', undefined, { cause: err });
   }
 
   let buffer;

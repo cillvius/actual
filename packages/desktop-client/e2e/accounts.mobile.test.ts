@@ -1,4 +1,4 @@
-import { type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 import { ConfigurationPage } from './page-models/configuration-page';
@@ -23,7 +23,7 @@ test.describe('Mobile Accounts', () => {
   });
 
   test.afterEach(async () => {
-    await page.close();
+    await page?.close();
   });
 
   test('opens the accounts page and asserts on balances', async () => {
@@ -46,7 +46,7 @@ test.describe('Mobile Accounts', () => {
 
     await expect(accountPage.heading).toHaveText('Bank of America');
     await expect(accountPage.transactionList).toBeVisible();
-    await expect(await accountPage.getBalance()).toBeGreaterThan(0);
+    expect(await accountPage.getBalance()).toBeGreaterThan(0);
     await expect(accountPage.noTransactionsMessage).not.toBeVisible();
     await expect(page).toMatchThemeScreenshots();
 
@@ -61,5 +61,30 @@ test.describe('Mobile Accounts', () => {
     await accountPage.searchByText('Kroger');
     await expect(accountPage.transactions).not.toHaveCount(0);
     await expect(page).toMatchThemeScreenshots();
+  });
+
+  test('reconciles an account', async () => {
+    const accountsPage = await navigation.goToAccountsPage();
+    await accountsPage.waitFor();
+
+    const accountPage = await accountsPage.openNthAccount(0);
+    await accountPage.waitFor();
+
+    await accountPage.startReconciliation('200.00');
+    await expect(accountPage.reconcilingBannerDifference).toBeVisible();
+    await expect(page).toMatchThemeScreenshots();
+
+    await accountPage.createReconciliationTransaction();
+    await expect(accountPage.reconcilingBannerAllReconciled).toBeVisible();
+    await expect(page).toMatchThemeScreenshots();
+
+    await accountPage.unclearFirstTransaction();
+    await expect(accountPage.reconcilingBannerDifference).toBeVisible();
+
+    await accountPage.clearFirstTransaction();
+    await expect(accountPage.reconcilingBannerAllReconciled).toBeVisible();
+
+    await accountPage.lockTransactions();
+    await expect(accountPage.reconcilingBanner).not.toBeVisible();
   });
 });

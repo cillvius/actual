@@ -1,11 +1,24 @@
 import MockDate from 'mockdate';
 
+import type { RuleConditionEntity, ScheduleEntity } from '#types/models';
+
 import * as monthUtils from './months';
 import {
-  getRecurringDescription,
+  computeSchedulePreviewTransactions,
+  getHasTransactionsQuery,
+  getNextDate,
+  getNextDateAfter,
+  getScheduleOccurrenceMatchStartDate,
   getStatus,
   getUpcomingDays,
+  indexPostedScheduleTransactions,
+  isCustomUpcomingLength,
+  isScheduleOccurrencePosted,
+  UPCOMING_LENGTH_PRESET_LABELS,
+  UPCOMING_LENGTH_PRESET_OPTIONS,
+  UPCOMING_LENGTH_PRESET_VALUES,
 } from './schedules';
+import type { ScheduleStatuses } from './schedules';
 
 describe('schedules', () => {
   const today = new Date(2017, 0, 1); // Global date when testing is set to 2017-01-01 per monthUtils.currentDay()
@@ -64,299 +77,569 @@ describe('schedules', () => {
     });
   });
 
-  describe('getRecurringDescription', () => {
-    it('describes weekly interval', () => {
-      expect(
-        getRecurringDescription(
-          { start: '2021-05-17', frequency: 'weekly' },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every week on Monday');
+  describe('getUpcomingDays', () => {
+    it.each([
+      ['1', 1, '2017-01-01'],
+      ['7', 7, '2017-01-01'],
+      ['14', 14, '2017-01-01'],
+      ['oneMonth', 31, '2017-01-01'],
+      ['oneMonth', 30, '2017-04-01'],
+      ['oneMonth', 30, '2017-04-15'],
+      ['oneMonth', 28, '2017-02-01'],
+      ['oneMonth', 29, '2020-02-01'], // leap-year
+      ['currentMonth', 30, '2017-01-01'],
+      ['currentMonth', 27, '2017-02-01'],
+      ['currentMonth', 20, '2017-02-08'],
+      ['currentMonth', 28, '2020-02-01'], // leap-year
+      ['2-day', 2, '2017-01-01'],
+      ['5-week', 35, '2017-01-01'],
+      ['3-month', 91, '2017-01-01'],
+      ['4-year', 1462, '2017-01-01'],
+      ['1-year', 366, '2017-06-15'], // Test year from mid-year (Jun 1, 2017 to Jun 1, 2018 + 1)
+      ['1-year', 367, '2019-06-15'], // Test year from mid-year with leap year 2020
+      ['2-year', 731, '2017-06-15'], // Test 2 years from mid-year (Jun 1, 2017 to Jun 1, 2019 + 1)
+    ])(
+      'value of %s on returns %i days on %s',
+      (value: string, expected: number, date: string) => {
+        expect(getUpcomingDays(value, date)).toEqual(expected);
+      },
+    );
+  });
 
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-05-17',
-            frequency: 'weekly',
-            interval: 2,
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every 2 weeks on Monday');
+  describe('computeSchedulePreviewTransactions', () => {
+    describe('forceUpcoming flag', () => {
+      function makeSchedule(
+        overrides: Partial<ScheduleEntity> &
+          Pick<ScheduleEntity, 'id' | 'next_date' | '_conditions'>,
+      ): ScheduleEntity {
+        return {
+          rule: 'rule-1',
+          completed: false,
+          posts_transaction: false,
+          tombstone: false,
+          _payee: 'payee-1',
+          _account: 'acct-1',
+          _amount: -10000,
+          _amountOp: 'is',
+          _date: overrides.next_date,
+          _actions: [],
+          ...overrides,
+        };
+      }
+
+      it('sets forceUpcoming=false for past dates of a missed recurring schedule', () => {
+        const schedule = makeSchedule({
+          id: 'sched-1',
+          next_date: '2016-12-19',
+          _conditions: [
+            {
+              field: 'date',
+              op: 'isapprox',
+              value: { start: '2016-12-01', frequency: 'weekly' },
+            },
+          ],
+        });
+
+        const statuses: ScheduleStatuses = new Map([['sched-1', 'missed']]);
+        const result = computeSchedulePreviewTransactions(
+          [schedule],
+          statuses,
+          '7',
+        );
+
+        const pastEntries = result.filter(r => r.date < '2017-01-01');
+        expect(pastEntries.length).toBeGreaterThan(0);
+        expect(pastEntries.every(r => r.forceUpcoming === false)).toBe(true);
+      });
+
+      it('sets forceUpcoming=true for future dates that differ from next_date', () => {
+        const schedule = makeSchedule({
+          id: 'sched-1',
+          next_date: '2016-12-19',
+          _conditions: [
+            {
+              field: 'date',
+              op: 'isapprox',
+              value: { start: '2016-12-01', frequency: 'weekly' },
+            },
+          ],
+        });
+
+        const statuses: ScheduleStatuses = new Map([['sched-1', 'missed']]);
+        const result = computeSchedulePreviewTransactions(
+          [schedule],
+          statuses,
+          '7',
+        );
+
+        const futureEntries = result.filter(r => r.date > '2017-01-01');
+        expect(futureEntries.length).toBeGreaterThan(0);
+        expect(futureEntries.every(r => r.forceUpcoming === true)).toBe(true);
+      });
+
+      it('sets forceUpcoming=false for next_date when not paid', () => {
+        const schedule = makeSchedule({
+          id: 'sched-1',
+          next_date: '2017-01-03',
+          _conditions: [{ field: 'date', op: 'is', value: '2017-01-03' }],
+        });
+
+        const statuses: ScheduleStatuses = new Map([['sched-1', 'upcoming']]);
+        const result = computeSchedulePreviewTransactions(
+          [schedule],
+          statuses,
+          '7',
+        );
+
+        expect(result).toHaveLength(1);
+        expect(result[0].forceUpcoming).toBe(false);
+      });
+
+      it('shifts next_date and forces upcoming for paid schedules', () => {
+        const schedule = makeSchedule({
+          id: 'sched-1',
+          next_date: '2017-01-02',
+          _conditions: [
+            {
+              field: 'date',
+              op: 'isapprox',
+              value: { start: '2016-12-01', frequency: 'weekly' },
+            },
+          ],
+        });
+
+        const statuses: ScheduleStatuses = new Map([['sched-1', 'paid']]);
+        const result = computeSchedulePreviewTransactions(
+          [schedule],
+          statuses,
+          '7',
+        );
+
+        expect(result.find(r => r.date === '2017-01-02')).toBeUndefined();
+        expect(
+          result
+            .filter(r => r.date >= '2017-01-01')
+            .every(r => r.forceUpcoming === true),
+        ).toBe(true);
+      });
     });
 
-    it('describes monthly interval', () => {
-      expect(
-        getRecurringDescription(
-          { start: '2021-04-25', frequency: 'monthly' },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the 25th');
+    it('does not crash when a recurring schedule has an end date in the past', () => {
+      function makeSchedule(
+        overrides: Partial<ScheduleEntity> &
+          Pick<ScheduleEntity, 'id' | 'next_date' | '_conditions'>,
+      ): ScheduleEntity {
+        return {
+          rule: 'rule-1',
+          completed: false,
+          posts_transaction: false,
+          tombstone: false,
+          _payee: 'payee-1',
+          _account: 'acct-1',
+          _amount: -10000,
+          _amountOp: 'is',
+          _date: overrides.next_date,
+          _actions: [],
+          ...overrides,
+        };
+      }
 
-      expect(
-        getRecurringDescription(
+      // Schedule that recurs monthly but ended in the past (2016-08-25)
+      // while current date is 2017-01-01
+      const schedule = makeSchedule({
+        id: 'sched-expired',
+        next_date: '2016-08-25',
+        _conditions: [
           {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            interval: 2,
+            field: 'date',
+            op: 'isapprox',
+            value: {
+              start: '2016-01-25',
+              frequency: 'monthly',
+              endMode: 'on_date',
+              endDate: '2016-08-25',
+            },
           },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every 2 months on the 25th');
+        ],
+      });
 
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            patterns: [{ type: 'day', value: 25 }],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the 25th');
+      const statuses: ScheduleStatuses = new Map([['sched-expired', 'missed']]);
+      const result = computeSchedulePreviewTransactions(
+        [schedule],
+        statuses,
+        '7',
+      );
 
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            interval: 2,
-            patterns: [{ type: 'day', value: 25 }],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every 2 months on the 25th');
-
-      // Last day should work
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            patterns: [{ type: 'day', value: 31 }],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the 31st');
-
-      // -1 should work, representing the last day
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            patterns: [{ type: 'day', value: -1 }],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the last day');
-
-      // Day names should work
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            patterns: [{ type: 'FR', value: 2 }],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the 2nd Friday');
-
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            patterns: [{ type: 'FR', value: -1 }],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the last Friday');
-    });
-
-    it('describes monthly interval with multiple days', () => {
-      // Note how order doesn't matter - the day should be sorted
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            patterns: [
-              { type: 'day', value: 15 },
-              { type: 'day', value: 3 },
-              { type: 'day', value: 20 },
-            ],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the 3rd, 15th, and 20th');
-
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            patterns: [
-              { type: 'day', value: 3 },
-              { type: 'day', value: -1 },
-              { type: 'day', value: 20 },
-            ],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the 3rd, 20th, and last day');
-
-      // Mix days and day names
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            patterns: [
-              { type: 'day', value: 3 },
-              { type: 'day', value: -1 },
-              { type: 'FR', value: 2 },
-            ],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the 2nd Friday, 3rd, and last day');
-
-      // When there is a mixture of types, day names should always come first
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-04-25',
-            frequency: 'monthly',
-            patterns: [
-              { type: 'SA', value: 1 },
-              { type: 'day', value: 2 },
-              { type: 'FR', value: 3 },
-              { type: 'day', value: 10 },
-            ],
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every month on the 1st Saturday, 3rd Friday, 2nd, and 10th');
-    });
-
-    it('describes yearly interval', () => {
-      expect(
-        getRecurringDescription(
-          { start: '2021-05-17', frequency: 'yearly' },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every year on May 17th');
-
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-05-17',
-            frequency: 'yearly',
-            interval: 2,
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every 2 years on May 17th');
-    });
-
-    it('describes intervals with limited occurrences', () => {
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-05-17',
-            frequency: 'weekly',
-            interval: 2,
-            endMode: 'after_n_occurrences',
-            endOccurrences: 2,
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every 2 weeks on Monday, 2 times');
-
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-05-17',
-            frequency: 'weekly',
-            interval: 2,
-            endMode: 'after_n_occurrences',
-            endOccurrences: 1,
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every 2 weeks on Monday, once');
-
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-05-17',
-            frequency: 'monthly',
-            interval: 2,
-            endMode: 'after_n_occurrences',
-            endOccurrences: 2,
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every 2 months on the 17th, 2 times');
-
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-05-17',
-            frequency: 'yearly',
-            interval: 2,
-            endMode: 'after_n_occurrences',
-            endOccurrences: 2,
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every 2 years on May 17th, 2 times');
-    });
-
-    it('describes intervals with an end date', () => {
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-05-17',
-            frequency: 'weekly',
-            interval: 2,
-            endMode: 'on_date',
-            endDate: '2021-06-01',
-          },
-          'MM/dd/yyyy',
-        ),
-      ).toBe('Every 2 weeks on Monday, until 06/01/2021');
-
-      expect(
-        getRecurringDescription(
-          {
-            start: '2021-05-17',
-            frequency: 'monthly',
-            interval: 2,
-            endMode: 'on_date',
-            endDate: '2021-06-01',
-          },
-          'yyyy-MM-dd',
-        ),
-      ).toBe('Every 2 months on the 17th, until 2021-06-01');
+      // Should not crash; schedule with past end date produces its next_date entry only
+      expect(result).toBeDefined();
     });
   });
 
-  describe('getUpcomingDays', () => {
+  describe('getHasTransactionsQuery', () => {
+    it('matches nothing when there are no schedules', () => {
+      // An empty `$or` compiles away to no constraint at all, which would make
+      // this scan every transaction in the budget. It must never do that.
+      const filters = getHasTransactionsQuery([]).serialize().filterExpressions;
+
+      expect(filters).toEqual([{ id: null }]);
+      expect(filters[0]).not.toHaveProperty('$or');
+    });
+
+    it('filters by schedule and date when schedules are given', () => {
+      const filters = getHasTransactionsQuery([
+        {
+          id: 'schedule-1',
+          next_date: '2024-03-10',
+          _conditions: [{ op: 'is', field: 'date', value: '2024-03-10' }],
+        },
+      ]).serialize().filterExpressions;
+
+      expect(filters).toEqual([
+        {
+          $or: [
+            { $and: { schedule: 'schedule-1', date: { $gte: '2024-03-10' } } },
+          ],
+        },
+      ]);
+    });
+  });
+
+  describe('getScheduleOccurrenceMatchStartDate', () => {
+    const occurrenceDate = '2024-03-10';
+
+    it('uses exact date for one-time schedules', () => {
+      expect(
+        getScheduleOccurrenceMatchStartDate(
+          {
+            _conditions: [{ op: 'is', field: 'date', value: occurrenceDate }],
+          },
+          occurrenceDate,
+        ),
+      ).toBe(occurrenceDate);
+    });
+
+    it('uses exact date for auto-posted recurring schedules', () => {
+      expect(
+        getScheduleOccurrenceMatchStartDate(
+          { posts_transaction: true },
+          occurrenceDate,
+        ),
+      ).toBe(occurrenceDate);
+    });
+
+    it('uses a 2-day lookback for manual recurring schedules', () => {
+      expect(
+        getScheduleOccurrenceMatchStartDate(
+          { posts_transaction: false },
+          occurrenceDate,
+        ),
+      ).toBe('2024-03-08');
+    });
+
+    it('uses exact date for recurring schedules with op is', () => {
+      expect(
+        getScheduleOccurrenceMatchStartDate(
+          {
+            posts_transaction: false,
+            _conditions: [
+              {
+                op: 'is',
+                field: 'date',
+                value: { start: occurrenceDate, frequency: 'monthly' },
+              },
+            ],
+          },
+          occurrenceDate,
+        ),
+      ).toBe(occurrenceDate);
+    });
+
+    it('uses exact date for daily recurring schedules with op is', () => {
+      expect(
+        getScheduleOccurrenceMatchStartDate(
+          {
+            posts_transaction: false,
+            _conditions: [
+              {
+                op: 'is',
+                field: 'date',
+                value: { start: occurrenceDate, frequency: 'daily' },
+              },
+            ],
+          },
+          occurrenceDate,
+        ),
+      ).toBe(occurrenceDate);
+    });
+  });
+
+  describe('indexPostedScheduleTransactions', () => {
+    it('groups schedule-linked transactions by schedule id', () => {
+      const indexed = indexPostedScheduleTransactions([
+        { schedule: 'sched-1', date: '2024-03-09' },
+        { schedule: 'sched-2', date: '2024-03-10' },
+        { schedule: 'sched-1', date: '2024-04-10' },
+        { date: '2024-03-11' },
+      ]);
+
+      expect(indexed.get('sched-1')).toEqual([
+        { schedule: 'sched-1', date: '2024-03-09' },
+        { schedule: 'sched-1', date: '2024-04-10' },
+      ]);
+      expect(indexed.get('sched-2')).toEqual([
+        { schedule: 'sched-2', date: '2024-03-10' },
+      ]);
+      expect(indexed.has('missing')).toBe(false);
+    });
+  });
+
+  describe('isScheduleOccurrencePosted', () => {
+    const scheduleId = 'sched-1';
+    const occurrenceDate = '2024-03-10';
+    const manualRecurringSchedule = { posts_transaction: false };
+    const autoPostSchedule = { posts_transaction: true };
+    const oneTimeSchedule = {
+      _conditions: [
+        { op: 'is', field: 'date', value: occurrenceDate } as const,
+      ],
+    };
+    const manualRecurringWithIsOp = {
+      posts_transaction: false,
+      _conditions: [
+        {
+          op: 'is',
+          field: 'date',
+          value: { start: occurrenceDate, frequency: 'monthly' },
+        },
+      ] satisfies RuleConditionEntity[],
+    };
+
+    function expectPosted(
+      schedule: Parameters<typeof getScheduleOccurrenceMatchStartDate>[0],
+      txDate: string,
+      expected: boolean,
+    ) {
+      expect(
+        isScheduleOccurrencePosted({
+          schedule,
+          scheduleId,
+          occurrenceDate,
+          postedTransactions: [{ schedule: scheduleId, date: txDate }],
+        }),
+      ).toBe(expected);
+    }
+
     it.each([
-      ['1', 1],
-      ['7', 7],
-      ['14', 14],
-      ['oneMonth', 32],
-      ['currentMonth', 31],
-      ['2-day', 2],
-      ['5-week', 35],
-      ['3-month', 91],
-      ['4-year', 1462],
-    ])('value of %s returns %i days', (value: string, expected: number) => {
-      expect(getUpcomingDays(value)).toEqual(expected);
+      [
+        'same-day manual recurring',
+        manualRecurringSchedule,
+        occurrenceDate,
+        true,
+      ],
+      [
+        'early pay day before due for recurring date cond',
+        manualRecurringWithIsOp,
+        '2024-03-09',
+        false,
+      ],
+      ['early pay within 2 days', manualRecurringSchedule, '2024-03-09', true],
+      [
+        'early pay outside window',
+        manualRecurringSchedule,
+        '2024-03-07',
+        false,
+      ],
+      ['auto-post day before due', autoPostSchedule, '2024-03-09', false],
+      ['auto-post on due date', autoPostSchedule, occurrenceDate, true],
+      ['one-time on due date', oneTimeSchedule, occurrenceDate, true],
+      ['one-time day before due', oneTimeSchedule, '2024-03-09', false],
+      [
+        'later month tx does not satisfy earlier occurrence',
+        manualRecurringSchedule,
+        '2024-04-10',
+        false,
+      ],
+    ] as const)('%s', (_label, schedule, txDate, expected) => {
+      expectPosted(schedule, txDate, expected);
+    });
+  });
+
+  describe('getNextDate', () => {
+    it('returns last occurrence for a recurring schedule with an end date in the past', () => {
+      const dateCond = {
+        op: 'isapprox',
+        value: {
+          start: '2016-01-25',
+          frequency: 'monthly',
+          endMode: 'on_date',
+          endDate: '2016-08-25',
+        },
+      };
+
+      // Current date is 2017-01-01 via MockDate
+      const result = getNextDate(dateCond);
+      expect(result).not.toBeNull();
+      // The last occurrence should be returned (reverse lookup)
+      expect(result).toBe('2016-08-25');
+    });
+
+    it('returns null when the end date is before the start date', () => {
+      const dateCond = {
+        op: 'isapprox',
+        value: {
+          start: '2016-03-25',
+          frequency: 'monthly',
+          endMode: 'on_date',
+          endDate: '2016-01-25',
+        },
+      };
+
+      const result = getNextDate(dateCond, new Date(2017, 0, 1));
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('getNextDateAfter', () => {
+    /* Dec 2020 calendar for reference:
+      | Su | Mo | Tu | We | Th | Fr | Sa |
+      |    |    | 01 | 02 | 03 | 04 | 05 |
+      | 06 | 07 | 08 | 09 | 10 | 11 | 12 |
+      | 13 | 14 | 15 | 16 | 17 | 18 | 19 |
+      | 20 | 21 | 22 | 23 | 24 | 25 | 26 |
+      | 27 | 28 | 29 | 30 | 31 |
+      */
+    function weeklyOnSaturday(extra = {}) {
+      return {
+        op: 'isapprox',
+        value: {
+          start: '2020-12-05',
+          frequency: 'weekly',
+          patterns: [],
+          ...extra,
+        },
+      };
+    }
+
+    it('returns the next occurrence after the given date', () => {
+      expect(getNextDateAfter(weeklyOnSaturday(), '2020-12-05')).toBe(
+        '2020-12-12',
+      );
+    });
+
+    it('returns the next occurrence when moving `after` the weekend', () => {
+      const dateCond = weeklyOnSaturday({
+        skipWeekend: true,
+        weekendSolveMode: 'after',
+      });
+
+      expect(getNextDateAfter(dateCond, '2020-12-07')).toBe('2020-12-14');
+    });
+
+    it('includes a weekend occurrence moved `after` the given date', () => {
+      const dateCond = weeklyOnSaturday({
+        skipWeekend: true,
+        weekendSolveMode: 'after',
+      });
+
+      expect(getNextDateAfter(dateCond, '2020-12-13')).toBe('2020-12-14');
+    });
+
+    it('does not return the same occurrence when moving `after` the weekend', () => {
+      const dateCond = {
+        op: 'isapprox',
+        value: {
+          start: '2020-12-06',
+          frequency: 'weekly',
+          patterns: [],
+          skipWeekend: true,
+          weekendSolveMode: 'after',
+        },
+      };
+
+      expect(getNextDateAfter(dateCond, '2020-12-07')).toBe('2020-12-14');
+    });
+
+    it('does not return the same occurrence when moving `before` the weekend', () => {
+      const dateCond = weeklyOnSaturday({
+        skipWeekend: true,
+        weekendSolveMode: 'before',
+      });
+
+      expect(getNextDateAfter(dateCond, '2020-12-04')).toBe('2020-12-11');
+    });
+
+    it('keeps a Monday occurrence that follows a `before` weekend adjustment', () => {
+      const dateCond = {
+        op: 'isapprox',
+        value: {
+          start: '2020-12-04',
+          frequency: 'daily',
+          patterns: [],
+          skipWeekend: true,
+          weekendSolveMode: 'before',
+        },
+      };
+
+      expect(getNextDateAfter(dateCond, '2020-12-04')).toBe('2020-12-07');
+    });
+
+    it('walks past every occurrence that resolves on or before the given date', () => {
+      /* Aug 2026 calendar for reference:
+        | Su | Mo | Tu | We | Th | Fr | Sa |
+        | 23 | 24 | 25 | 26 | 27 | 28 | 29 |
+        | 30 | 31 |
+        */
+      const dateCond = {
+        op: 'isapprox',
+        value: {
+          start: '2026-08-24',
+          frequency: 'daily',
+          patterns: [],
+          skipWeekend: true,
+          weekendSolveMode: 'before',
+        },
+      };
+
+      expect(getNextDateAfter(dateCond, '2026-08-28')).toBe('2026-08-31');
+    });
+
+    it('returns null when the schedule has no further occurrences', () => {
+      const dateCond = weeklyOnSaturday({
+        endMode: 'after_n_occurrences',
+        endOccurrences: 2,
+      });
+
+      expect(getNextDateAfter(dateCond, '2020-12-05')).toBe('2020-12-12');
+      expect(getNextDateAfter(dateCond, '2020-12-12')).toBeNull();
+    });
+  });
+
+  describe('shared presets', () => {
+    it('preset values and options align', () => {
+      const valuesFromOptions = UPCOMING_LENGTH_PRESET_OPTIONS.map(
+        o => o.value,
+      );
+      expect(valuesFromOptions).toEqual(
+        UPCOMING_LENGTH_PRESET_VALUES as readonly string[],
+      );
+    });
+
+    it('every preset has a label entry', () => {
+      for (const v of UPCOMING_LENGTH_PRESET_VALUES) {
+        expect(UPCOMING_LENGTH_PRESET_LABELS[v]).toBeDefined();
+        expect(typeof UPCOMING_LENGTH_PRESET_LABELS[v]).toBe('string');
+      }
+    });
+
+    it('isCustomUpcomingLength recognizes presets and custom values', () => {
+      for (const v of UPCOMING_LENGTH_PRESET_VALUES) {
+        expect(isCustomUpcomingLength(v)).toBe(false);
+      }
+
+      expect(isCustomUpcomingLength('1-day')).toBe(true);
+      expect(isCustomUpcomingLength('2-week')).toBe(true);
+      expect(isCustomUpcomingLength(null)).toBe(false);
+      expect(isCustomUpcomingLength(undefined)).toBe(false);
     });
   });
 });

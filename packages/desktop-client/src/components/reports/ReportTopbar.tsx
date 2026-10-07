@@ -1,39 +1,47 @@
-import React, { type ComponentProps } from 'react';
+import React from 'react';
+import type { ComponentProps } from 'react';
 import { useTranslation } from 'react-i18next';
-
-import { type CustomReportEntity } from 'loot-core/types/models/reports';
-import { type RuleConditionEntity } from 'loot-core/types/models/rule';
 
 import {
   SvgCalculator,
+  SvgCamera,
   SvgChart,
+  SvgChartArea,
   SvgChartBar,
   SvgChartPie,
   SvgListBullet,
   SvgQueue,
   SvgTag,
-} from '../../icons/v1';
-import { SvgChartArea } from '../../icons/v1/ChartArea';
-import { theme } from '../../style';
-import { SpaceBetween } from '../common/SpaceBetween';
-import { View } from '../common/View';
-import { FilterButton } from '../filters/FiltersMenu';
+} from '@actual-app/components/icons/v1';
+import { SpaceBetween } from '@actual-app/components/space-between';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import * as monthUtils from '@actual-app/core/shared/months';
+import type {
+  CustomReportEntity,
+  RuleConditionEntity,
+} from '@actual-app/core/types/models';
+import { toPng } from 'html-to-image';
+
+import { FilterButton } from '#components/filters/FiltersMenu';
 
 import { GraphButton } from './GraphButton';
-import { SaveReport } from './SaveReport';
+import { SaveReportWrapper } from './SaveReport';
+import type { SavedStatus } from './SaveReportMenu';
 import { setSessionReport } from './setSessionReport';
+import { SnapshotButton } from './SnapshotButton';
 
 type ReportTopbarProps = {
   customReportItems: CustomReportEntity;
   report: CustomReportEntity;
-  savedStatus: string;
+  savedStatus: SavedStatus;
   setGraphType: (value: string) => void;
   viewLegend: boolean;
   viewSummary: boolean;
   viewLabels: boolean;
   onApplyFilter: (newFilter: RuleConditionEntity) => void;
   onChangeViews: (viewType: string) => void;
-  onReportChange: ComponentProps<typeof SaveReport>['onReportChange'];
+  onReportChange: ComponentProps<typeof SaveReportWrapper>['onReportChange'];
   isItemDisabled: (type: string) => boolean;
   defaultItems: (item: string) => void;
 };
@@ -58,6 +66,20 @@ export function ReportTopbar({
     onReportChange({ type: 'modify' });
     setGraphType(cond);
     defaultItems(cond);
+  };
+
+  const downloadSnapshot = async () => {
+    const reportElement = document.getElementById('custom-report-content');
+    const title = report.name;
+    if (reportElement) {
+      const dataUrl = await toPng(reportElement);
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `${monthUtils.currentDay()} - ${title}.png`;
+      link.click();
+    } else {
+      console.error('Report container not found.');
+    }
   };
 
   return (
@@ -177,7 +199,6 @@ export function ReportTopbar({
       >
         <SvgTag width={15} height={15} />
       </GraphButton>
-
       <View
         style={{
           width: 1,
@@ -187,7 +208,22 @@ export function ReportTopbar({
           flexShrink: 0,
         }}
       />
-
+      <SnapshotButton
+        style={{ marginRight: 15 }}
+        title={t('Download Snapshot')}
+        onSelect={downloadSnapshot}
+      >
+        <SvgCamera width={15} height={15} />
+      </SnapshotButton>
+      <View
+        style={{
+          width: 1,
+          height: 30,
+          backgroundColor: theme.pillBorderDark,
+          marginRight: 15,
+          flexShrink: 0,
+        }}
+      />
       <SpaceBetween
         style={{
           flexWrap: 'nowrap',
@@ -206,9 +242,23 @@ export function ReportTopbar({
             onApplyFilter(e);
             onReportChange({ type: 'modify' });
           }}
-          exclude={[]}
+          exclude={
+            customReportItems.balanceType === 'Budgeted'
+              ? [
+                  'date',
+                  'account',
+                  'payee',
+                  'notes',
+                  'amount',
+                  'cleared',
+                  'reconciled',
+                  'transfer',
+                  'saved',
+                ]
+              : []
+          }
         />
-        <SaveReport
+        <SaveReportWrapper
           customReportItems={customReportItems}
           report={report}
           savedStatus={savedStatus}

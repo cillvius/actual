@@ -1,35 +1,41 @@
 // @ts-strict-ignore
-import React, { useRef, useState, type CSSProperties } from 'react';
-import { useTranslation } from 'react-i18next';
+import React, { useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 
-import { type CategoryEntity } from 'loot-core/src/types/models';
+import { Button } from '@actual-app/components/button';
+import {
+  SvgChartPie,
+  SvgDotsHorizontalTriple,
+  SvgTrash,
+} from '@actual-app/components/icons/v1';
+import {
+  SvgNotesPaper,
+  SvgViewHide,
+  SvgViewShow,
+} from '@actual-app/components/icons/v2';
+import { Menu } from '@actual-app/components/menu';
+import { Popover } from '@actual-app/components/popover';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
-import { useCategory } from '../../hooks/useCategory';
-import { useCategoryGroup } from '../../hooks/useCategoryGroup';
-import { useNotes } from '../../hooks/useNotes';
-import { SvgDotsHorizontalTriple, SvgTrash } from '../../icons/v1';
-import { SvgNotesPaper, SvgViewHide, SvgViewShow } from '../../icons/v2';
-import { styles, theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Menu } from '../common/Menu';
 import {
   Modal,
   ModalCloseButton,
   ModalHeader,
   ModalTitle,
-} from '../common/Modal';
-import { Popover } from '../common/Popover';
-import { View } from '../common/View';
-import { Notes } from '../Notes';
+} from '#components/common/Modal';
+import { Notes } from '#components/Notes';
+import { useCategory } from '#hooks/useCategory';
+import { useCategoryGroup } from '#hooks/useCategoryGroup';
+import { useNotes } from '#hooks/useNotes';
+import type { Modal as ModalType } from '#modals/modalsSlice';
 
-type CategoryMenuModalProps = {
-  categoryId: string;
-  onSave: (category: CategoryEntity) => void;
-  onEditNotes: (categoryId: string) => void;
-  onDelete: (categoryId: string) => void;
-  onToggleVisibility: (categoryId: string) => void;
-  onClose?: () => void;
-};
+type CategoryMenuModalProps = Extract<
+  ModalType,
+  { name: 'category-menu' }
+>['options'];
 
 export function CategoryMenuModal({
   categoryId,
@@ -37,11 +43,12 @@ export function CategoryMenuModal({
   onEditNotes,
   onDelete,
   onToggleVisibility,
+  onEditAutomations,
   onClose,
 }: CategoryMenuModalProps) {
   const { t } = useTranslation();
-  const category = useCategory(categoryId);
-  const categoryGroup = useCategoryGroup(category?.cat_group);
+  const { data: category } = useCategory(categoryId);
+  const { data: categoryGroup } = useCategoryGroup(category?.group);
   const originalNotes = useNotes(category.id);
 
   const onRename = newName => {
@@ -65,6 +72,10 @@ export function CategoryMenuModal({
     onDelete?.(category.id);
   };
 
+  const _onEditAutomations = () => {
+    onEditAutomations?.(category.id);
+  };
+
   const buttonStyle: CSSProperties = {
     ...styles.mediumText,
     height: styles.mobileMinHeight,
@@ -81,7 +92,7 @@ export function CategoryMenuModal({
         style: { height: '45vh' },
       }}
     >
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             leftContent={
@@ -99,7 +110,7 @@ export function CategoryMenuModal({
                 onTitleUpdate={onRename}
               />
             }
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View
             style={{
@@ -114,7 +125,9 @@ export function CategoryMenuModal({
               }}
             >
               <Notes
-                notes={originalNotes?.length > 0 ? originalNotes : 'No notes'}
+                notes={
+                  originalNotes?.length > 0 ? originalNotes : t('No notes')
+                }
                 editable={false}
                 focused={false}
                 getStyle={() => ({
@@ -133,6 +146,7 @@ export function CategoryMenuModal({
                 flexWrap: 'wrap',
                 justifyContent: 'space-between',
                 alignContent: 'space-between',
+                gap: 8,
                 paddingTop: 10,
               }}
             >
@@ -142,8 +156,18 @@ export function CategoryMenuModal({
                   height={20}
                   style={{ paddingRight: 5 }}
                 />
-                {t('Edit notes')}
+                <Trans>Edit notes</Trans>
               </Button>
+              {onEditAutomations && (
+                <Button style={buttonStyle} onPress={_onEditAutomations}>
+                  <SvgChartPie
+                    width={20}
+                    height={20}
+                    style={{ paddingRight: 5 }}
+                  />
+                  <Trans>Budget automations</Trans>
+                </Button>
+              )}
             </View>
           </View>
         </>
@@ -197,14 +221,14 @@ function AdditionalCategoryMenu({
             items={[
               !categoryGroup?.hidden && {
                 name: 'toggleVisibility',
-                text: category.hidden ? 'Show' : 'Hide',
+                text: category.hidden ? t('Show') : t('Hide'),
                 icon: category.hidden ? SvgViewShow : SvgViewHide,
                 iconSize: 16,
               },
               !categoryGroup?.hidden && Menu.line,
               {
                 name: 'delete',
-                text: 'Delete',
+                text: t('Delete'),
                 icon: SvgTrash,
                 iconSize: 15,
               },

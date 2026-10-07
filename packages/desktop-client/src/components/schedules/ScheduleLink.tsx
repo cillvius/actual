@@ -2,37 +2,34 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { pushModal } from 'loot-core/client/actions';
-import { useSchedules } from 'loot-core/src/client/data-hooks/schedules';
-import { send } from 'loot-core/src/platform/client/fetch';
-import { q } from 'loot-core/src/shared/query';
-import {
-  type ScheduleEntity,
-  type TransactionEntity,
-} from 'loot-core/src/types/models';
+import { Button } from '@actual-app/components/button';
+import { SvgAdd } from '@actual-app/components/icons/v0';
+import { InitialFocus } from '@actual-app/components/initial-focus';
+import { Text } from '@actual-app/components/text';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
+import { q } from '@actual-app/core/shared/query';
 
-import { SvgAdd } from '../../icons/v0';
-import { useDispatch } from '../../redux';
-import { Button } from '../common/Button2';
-import { InitialFocus } from '../common/InitialFocus';
-import { Modal, ModalCloseButton, ModalHeader } from '../common/Modal';
-import { Search } from '../common/Search';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { Search } from '#components/common/Search';
+import { useSchedules } from '#hooks/useSchedules';
+import { pushModal } from '#modals/modalsSlice';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
 
 import { ROW_HEIGHT, SchedulesTable } from './SchedulesTable';
+
+type ScheduleLinkProps = Extract<
+  ModalType,
+  { name: 'schedule-link' }
+>['options'];
 
 export function ScheduleLink({
   transactionIds: ids,
   getTransaction,
   accountName,
   onScheduleLinked,
-}: {
-  transactionIds: string[];
-  getTransaction: (transactionId: string) => TransactionEntity;
-  accountName?: string;
-  onScheduleLinked?: (schedule: ScheduleEntity) => void;
-}) {
+}: ScheduleLinkProps) {
   const { t } = useTranslation();
 
   const dispatch = useDispatch();
@@ -47,7 +44,7 @@ export function ScheduleLink({
     statuses,
   } = useSchedules({ query: schedulesQuery });
 
-  const searchInput = useRef(null);
+  const searchInput = useRef<HTMLInputElement | null>(null);
 
   async function onSelect(scheduleId: string) {
     if (ids?.length > 0) {
@@ -60,9 +57,14 @@ export function ScheduleLink({
 
   async function onCreate() {
     dispatch(
-      pushModal('schedule-edit', {
-        id: null,
-        transaction: getTransaction(ids[0]),
+      pushModal({
+        modal: {
+          name: 'schedule-edit',
+          options: {
+            id: null,
+            transaction: getTransaction(ids[0]),
+          },
+        },
       }),
     );
   }
@@ -76,11 +78,11 @@ export function ScheduleLink({
         },
       }}
     >
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={t('Link schedule')}
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View
             style={{
@@ -96,23 +98,28 @@ export function ScheduleLink({
                 { count: ids?.length ?? 0 },
               )}
             </Text>
-            <InitialFocus>
-              <Search
-                inputRef={searchInput}
-                isInModal
-                width={300}
-                placeholder={t('Filter schedules…')}
-                value={filter}
-                onChange={setFilter}
-              />
+            <InitialFocus<HTMLInputElement>>
+              {node => (
+                <Search
+                  ref={r => {
+                    node.current = r;
+                    searchInput.current = r;
+                  }}
+                  isInModal
+                  width={300}
+                  placeholder={t('Filter schedules…')}
+                  value={filter}
+                  onChange={setFilter}
+                />
+              )}
             </InitialFocus>
             {ids.length === 1 && (
               <Button
                 variant="primary"
                 style={{ marginLeft: 15, padding: '4px 10px' }}
                 onPress={() => {
-                  close();
-                  onCreate();
+                  state.close();
+                  void onCreate();
                 }}
               >
                 <SvgAdd style={{ width: '20', padding: '3' }} />
@@ -134,11 +141,10 @@ export function ScheduleLink({
               isLoading={isSchedulesLoading}
               allowCompleted={false}
               filter={filter}
-              minimal={true}
-              onAction={() => {}}
+              minimal
               onSelect={id => {
-                onSelect(id);
-                close();
+                void onSelect(id);
+                state.close();
               }}
               schedules={schedules}
               statuses={statuses}

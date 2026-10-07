@@ -1,19 +1,22 @@
-import React, { type CSSProperties, type MouseEventHandler } from 'react';
+import React from 'react';
+import type { CSSProperties, MouseEventHandler } from 'react';
+import { useTranslation } from 'react-i18next';
 
+import { Block } from '@actual-app/components/block';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { Tooltip } from '@actual-app/components/tooltip';
+import { View } from '@actual-app/components/view';
 import { css } from '@emotion/css';
 
-import { envelopeBudget } from 'loot-core/src/client/queries';
-
-import { theme, styles } from '../../../../style';
-import { Block } from '../../../common/Block';
-import { Tooltip } from '../../../common/Tooltip';
-import { View } from '../../../common/View';
-import { PrivacyFilter } from '../../../PrivacyFilter';
-import { useFormat } from '../../../spreadsheet/useFormat';
 import {
   useEnvelopeSheetName,
   useEnvelopeSheetValue,
-} from '../EnvelopeBudgetComponents';
+} from '#components/budget/envelope/EnvelopeBudgetComponents';
+import { FinancialText } from '#components/FinancialText';
+import { PrivacyFilter } from '#components/PrivacyFilter';
+import { useFormat } from '#hooks/useFormat';
+import { envelopeBudget } from '#spreadsheet/bindings';
 
 import { TotalsList } from './TotalsList';
 
@@ -34,6 +37,7 @@ export function ToBudgetAmount({
   isTotalsListTooltipDisabled = false,
   onContextMenu,
 }: ToBudgetAmountProps) {
+  const { t } = useTranslation();
   const sheetName = useEnvelopeSheetName(envelopeBudget.toBudget);
   const sheetValue = useEnvelopeSheetValue({
     name: envelopeBudget.toBudget,
@@ -48,10 +52,11 @@ export function ToBudgetAmount({
   }
   const num = availableValue ?? 0;
   const isNegative = num < 0;
+  const isPositive = num > 0;
 
   return (
     <View style={{ alignItems: 'center', ...style }}>
-      <Block>{isNegative ? 'Overbudgeted:' : 'To Budget:'}</Block>
+      <Block>{isNegative ? t('Overbudgeted:') : t('To Budget:')}</Block>
       <View>
         <Tooltip
           content={
@@ -81,19 +86,25 @@ export function ToBudgetAmount({
                   fontWeight: 400,
                   userSelect: 'none',
                   cursor: 'pointer',
-                  color: isNegative ? theme.errorText : theme.pageTextPositive,
+                  color: isPositive
+                    ? theme.toBudgetPositive
+                    : isNegative
+                      ? theme.toBudgetNegative
+                      : theme.toBudgetZero,
                   marginBottom: -1,
                   borderBottom: '1px solid transparent',
                   ':hover': {
-                    borderColor: isNegative
-                      ? theme.errorBorder
-                      : theme.pageTextPositive,
+                    borderColor: isPositive
+                      ? theme.toBudgetPositive
+                      : isNegative
+                        ? theme.toBudgetNegative
+                        : theme.toBudgetZero,
                   },
                 },
                 amountStyle,
               ])}
             >
-              {format(num, 'financial')}
+              <FinancialText>{format(num, 'financial')}</FinancialText>
             </Block>
           </PrivacyFilter>
         </Tooltip>

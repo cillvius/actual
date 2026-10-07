@@ -1,39 +1,28 @@
 import { useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { addNotification, popModal, signOut } from 'loot-core/client/actions';
-import { send } from 'loot-core/platform/client/fetch';
-import {
-  PossibleRoles,
-  type UserEntity,
-} from 'loot-core/src/types/models/user';
+import { Button } from '@actual-app/components/button';
+import { Input } from '@actual-app/components/input';
+import { Select } from '@actual-app/components/select';
+import { SpaceBetween } from '@actual-app/components/space-between';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
+import { PossibleRoles } from '@actual-app/core/shared/user';
+import type { NewUserEntity, UserEntity } from '@actual-app/core/types/models';
 
-import { useDispatch } from '../../redux';
-import { styles, theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Input } from '../common/Input';
-import { Modal, ModalCloseButton, ModalHeader } from '../common/Modal';
-import { Select } from '../common/Select';
-import { Stack } from '../common/Stack';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { Checkbox, FormField, FormLabel } from '../forms';
+import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { Checkbox, FormField, FormLabel } from '#components/forms';
+import { popModal } from '#modals/modalsSlice';
+import type { Modal as ModalType } from '#modals/modalsSlice';
+import { addNotification } from '#notifications/notificationsSlice';
+import { useDispatch } from '#redux';
+import { signOut } from '#users/usersSlice';
 
 type User = UserEntity;
-
-type EditUserProps = {
-  defaultUser: User;
-  onSave: (
-    method: 'user-add' | 'user-update',
-    user: User,
-    setError: (error: string) => void,
-  ) => Promise<void>;
-};
-
-type EditUserFinanceAppProps = {
-  defaultUser: User;
-  onSave: (user: User) => void;
-};
+type NewUser = NewUserEntity;
 
 function useGetUserDirectoryErrors() {
   const { t } = useTranslation();
@@ -95,15 +84,17 @@ function useSaveUser() {
       if (error === 'token-expired') {
         dispatch(
           addNotification({
-            type: 'error',
-            id: 'login-expired',
-            title: t('Login expired'),
-            sticky: true,
-            message: getUserDirectoryErrors(error),
-            button: {
-              title: t('Go to login'),
-              action: () => {
-                dispatch(signOut());
+            notification: {
+              type: 'error',
+              id: 'login-expired',
+              title: t('Login expired'),
+              sticky: true,
+              message: getUserDirectoryErrors(error),
+              button: {
+                title: t('Go to login'),
+                action: () => {
+                  void dispatch(signOut());
+                },
               },
             },
           }),
@@ -119,33 +110,38 @@ function useSaveUser() {
   return { saveUser };
 }
 
+type EditUserFinanceAppProps = Extract<
+  ModalType,
+  { name: 'edit-user' }
+>['options'];
+
 export function EditUserFinanceApp({
-  defaultUser,
+  user: defaultUser,
   onSave: originalOnSave,
 }: EditUserFinanceAppProps) {
   const { t } = useTranslation();
   const { saveUser } = useSaveUser();
-
+  const isExistingUser = 'id' in defaultUser && !!defaultUser.id;
   return (
     <Modal name="edit-user">
-      {({ state: { close } }) => (
+      {({ state }) => (
         <>
           <ModalHeader
             title={
-              defaultUser.id
+              isExistingUser
                 ? t('Edit user {{userName}}', {
                     userName: defaultUser.displayName ?? defaultUser.userName,
                   })
-                : 'Add user'
+                : t('Add user')
             }
-            rightContent={<ModalCloseButton onPress={close} />}
+            rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <EditUser
             defaultUser={defaultUser}
             onSave={async (method, user, setError) => {
               if (await saveUser(method, user, setError)) {
                 originalOnSave(user);
-                close();
+                state.close();
               }
             }}
           />
@@ -155,9 +151,20 @@ export function EditUserFinanceApp({
   );
 }
 
+type EditUserProps = {
+  defaultUser: User | NewUser;
+  onSave: (
+    method: 'user-add' | 'user-update',
+    user: User,
+    setError: (error: string) => void,
+  ) => Promise<void>;
+};
+
 function EditUser({ defaultUser, onSave: originalOnSave }: EditUserProps) {
   const { t } = useTranslation();
   const dispatch = useDispatch();
+  const isExistingUser = 'id' in defaultUser && !!defaultUser.id;
+  const isOwner = 'owner' in defaultUser && defaultUser.owner;
 
   const [userName, setUserName] = useState<string>(defaultUser.userName ?? '');
   const [displayName, setDisplayName] = useState<string>(
@@ -178,30 +185,32 @@ function EditUser({ defaultUser, onSave: originalOnSave }: EditUserProps) {
     }
     const user: User = {
       ...defaultUser,
+      id: isExistingUser ? defaultUser.id : '',
+      owner: isOwner,
       userName,
       displayName,
       enabled,
       role,
     };
 
-    const method = user.id ? 'user-update' : 'user-add';
+    const method = isExistingUser ? 'user-update' : 'user-add';
     await originalOnSave(method, user, setError);
   }
 
   return (
     <>
-      <Stack direction="row" style={{ marginTop: 10 }}>
+      <SpaceBetween style={{ marginTop: 10 }}>
         <FormField style={{ flex: 1 }}>
           <FormLabel title={t('Username')} htmlFor="name-field" />
           <Input
             id="name-field"
             value={userName}
-            onChangeValue={text => setUserName(text)}
+            onChangeValue={setUserName}
             style={{
               borderColor: theme.buttonMenuBorder,
             }}
           />
-          <label
+          <Text
             style={{
               ...styles.verySmallText,
               color: theme.pageTextLight,
@@ -209,7 +218,7 @@ function EditUser({ defaultUser, onSave: originalOnSave }: EditUserProps) {
             }}
           >
             <Trans>The username registered within the OpenID provider.</Trans>
-          </label>
+          </Text>
         </FormField>
         <View
           style={{
@@ -222,19 +231,19 @@ function EditUser({ defaultUser, onSave: originalOnSave }: EditUserProps) {
           <Checkbox
             id="enabled-field"
             checked={enabled}
-            disabled={defaultUser.owner}
+            disabled={isOwner}
             style={{
-              color: defaultUser.owner ? theme.pageTextSubdued : 'inherit',
+              color: isOwner ? theme.pageTextSubdued : 'inherit',
             }}
             onChange={() => setEnabled(!enabled)}
           />
           <label htmlFor="enabled-field" style={{ userSelect: 'none' }}>
-            Enabled
+            <Trans>Enabled</Trans>
           </label>
         </View>
-      </Stack>
-      {defaultUser.owner && (
-        <label
+      </SpaceBetween>
+      {isOwner && (
+        <Text
           style={{
             ...styles.verySmallText,
             color: theme.errorText,
@@ -244,15 +253,15 @@ function EditUser({ defaultUser, onSave: originalOnSave }: EditUserProps) {
           <Trans>
             Change this username with caution; it is the server owner.
           </Trans>
-        </label>
+        </Text>
       )}
-      <Stack direction="row" style={{ marginTop: 10 }}>
+      <SpaceBetween style={{ marginTop: 10 }}>
         <FormField style={{ flex: 1 }}>
           <FormLabel title={t('Display Name')} htmlFor="displayname-field" />
           <Input
             id="displayname-field"
             value={displayName}
-            onChangeValue={text => setDisplayName(text)}
+            onChangeValue={setDisplayName}
             placeholder={t('(Optional)')}
             style={{
               borderColor: theme.buttonMenuBorder,
@@ -282,13 +291,13 @@ function EditUser({ defaultUser, onSave: originalOnSave }: EditUserProps) {
             </Trans>
           </View>
         </FormField>
-      </Stack>
-      <Stack direction="row" style={{ marginTop: 10, width: '100px' }}>
+      </SpaceBetween>
+      <SpaceBetween style={{ marginTop: 10, width: '100px' }}>
         <FormField style={{ flex: 1 }}>
-          <FormLabel title="Role" htmlFor="role-field" />
+          <FormLabel title={t('Role')} htmlFor="role-field" />
           <Select
             id="role-field"
-            disabled={defaultUser.owner}
+            disabled={isOwner}
             options={Object.entries(PossibleRoles)}
             value={role}
             onChange={newValue => setRole(newValue)}
@@ -297,27 +306,24 @@ function EditUser({ defaultUser, onSave: originalOnSave }: EditUserProps) {
             }}
           />
         </FormField>
-      </Stack>
+      </SpaceBetween>
       <RoleDescription />
 
-      <Stack
-        direction="row"
-        justify="flex-end"
-        align="center"
-        style={{ marginTop: 20 }}
+      <SpaceBetween
+        gap={10}
+        style={{
+          marginTop: 20,
+          justifyContent: 'flex-end',
+        }}
       >
         {error && <Text style={{ color: theme.errorText }}>{error}</Text>}
-        <Button
-          variant="bare"
-          style={{ marginRight: 10 }}
-          onPress={() => dispatch(popModal())}
-        >
+        <Button variant="bare" onPress={() => dispatch(popModal())}>
           <Trans>Cancel</Trans>
         </Button>
         <Button variant="primary" onPress={onSave}>
-          {defaultUser.id ? 'Save' : 'Add'}
+          {isExistingUser ? t('Save') : t('Add')}
         </Button>
-      </Stack>
+      </SpaceBetween>
     </>
   );
 }
@@ -348,7 +354,7 @@ const RoleDescription = () => {
         </Trans>
       </Text>
       <View style={{ paddingTop: 5 }}>
-        <label
+        <Text
           style={{
             ...styles.altMenuHeaderText,
             ...styles.verySmallText,
@@ -356,7 +362,7 @@ const RoleDescription = () => {
           }}
         >
           <Trans>Basic</Trans>
-        </label>
+        </Text>
         <Text
           style={{
             ...styles.verySmallText,
@@ -381,7 +387,7 @@ const RoleDescription = () => {
         </Text>
       </View>
       <View style={{ paddingTop: 10 }}>
-        <label
+        <Text
           style={{
             ...styles.altMenuHeaderText,
             ...styles.verySmallText,
@@ -389,7 +395,7 @@ const RoleDescription = () => {
           }}
         >
           <Trans>Admin</Trans>
-        </label>
+        </Text>
         <Text
           style={{
             ...styles.verySmallText,

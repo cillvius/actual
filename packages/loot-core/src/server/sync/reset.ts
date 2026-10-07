@@ -1,11 +1,14 @@
+import { captureException } from '#platform/exceptions';
 // @ts-strict-ignore
-import { captureException } from '../../platform/exceptions';
-import * as asyncStorage from '../../platform/server/asyncStorage';
-import * as connection from '../../platform/server/connection';
-import * as cloudStorage from '../cloud-storage';
-import * as db from '../db';
-import { runMutator } from '../mutators';
-import * as prefs from '../prefs';
+import * as asyncStorage from '#platform/server/asyncStorage';
+import * as connection from '#platform/server/connection';
+import * as cloudStorage from '#server/cloud-storage';
+import * as db from '#server/db';
+import { runMutator } from '#server/mutators';
+import * as prefs from '#server/prefs';
+
+import { deleteStalePendingMessages } from './replay';
+import { notifyDroppedMessages } from './utils';
 
 export async function resetSync(
   keyState?,
@@ -27,13 +30,26 @@ export async function resetSync(
     return { error };
   }
 
+  // Resetting discards deferred newer-version messages for every
+  // device; the user is warned afterwards via `notifyDroppedMessages`.
+  // TODO: pre-reset confirmation dialog
+  let discardedDeferredCount = 0;
+
   await runMutator(async () => {
+    // Deferred messages belong to the discarded message log; replaying
+    // them later would resurrect rows hard-deleted below. Stale rows go
+    // first, uncounted, so only real losses feed the warning.
+    deleteStalePendingMessages();
+    discardedDeferredCount = Number(
+      db.runQuery('DELETE FROM messages_pending').changes,
+    );
+
     // TOOD: We could automatically generate the list of tables to
     // cleanup by looking at the schema
     //
     // Be VERY careful here since we are bulk deleting data. It should
     // never delete any data that doesn't have `tombstone = 1`
-    await db.execQuery(`
+    db.execQuery(`
       DELETE FROM messages_crdt;
       DELETE FROM messages_clock;
       DELETE FROM transactions WHERE tombstone = 1;
@@ -48,6 +64,10 @@ export async function resetSync(
     `);
     await db.loadClock();
   });
+
+  if (discardedDeferredCount > 0) {
+    notifyDroppedMessages();
+  }
 
   await prefs.savePrefs({
     groupId: null,

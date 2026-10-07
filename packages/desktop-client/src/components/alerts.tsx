@@ -1,29 +1,30 @@
-// @ts-strict-ignore
-import React, {
-  type ComponentType,
-  type ReactNode,
-  type CSSProperties,
-} from 'react';
+import React from 'react';
+import type { ComponentType, CSSProperties, ReactNode } from 'react';
 
-import { SvgExclamationOutline, SvgInformationOutline } from '../icons/v1';
-import { styles, theme } from '../style';
-
-import { Text } from './common/Text';
-import { View } from './common/View';
+import {
+  SvgExclamationOutline,
+  SvgInformationOutline,
+} from '@actual-app/components/icons/v1';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
 
 type AlertProps = {
-  icon?: ComponentType<{ width?: number; style?: CSSProperties }>;
+  icon: ComponentType<{ width?: number; style?: CSSProperties }>;
   color?: string;
   backgroundColor?: string;
   style?: CSSProperties;
+  iconStyle?: CSSProperties;
   children?: ReactNode;
 };
 
-const Alert = ({
+export const Alert = ({
   icon: Icon,
   color,
   backgroundColor,
   style,
+  iconStyle,
   children,
 }: AlertProps) => {
   return (
@@ -49,21 +50,29 @@ const Alert = ({
           alignSelf: 'stretch',
           flexShrink: 0,
           marginRight: 5,
+          ...iconStyle,
         }}
       >
         <Icon width={13} style={{ marginTop: 2 }} />
       </View>
-      <Text style={{ zIndex: 1, lineHeight: 1.5 }}>{children}</Text>
+      <Text style={{ width: '100%', zIndex: 1, lineHeight: 1.5 }}>
+        {children}
+      </Text>
     </View>
   );
 };
 
 type ScopedAlertProps = {
   style?: CSSProperties;
+  iconStyle?: CSSProperties;
   children?: ReactNode;
 };
 
-export const Information = ({ style, children }: ScopedAlertProps) => {
+export const Information = ({
+  style,
+  iconStyle,
+  children,
+}: ScopedAlertProps) => {
   return (
     <Alert
       icon={SvgInformationOutline}
@@ -74,32 +83,35 @@ export const Information = ({ style, children }: ScopedAlertProps) => {
         padding: 5,
         ...style,
       }}
+      iconStyle={iconStyle}
     >
       {children}
     </Alert>
   );
 };
 
-export const Warning = ({ style, children }: ScopedAlertProps) => {
+export const Warning = ({ style, iconStyle, children }: ScopedAlertProps) => {
   return (
     <Alert
       icon={SvgExclamationOutline}
       color={theme.warningText}
       backgroundColor={theme.warningBackground}
       style={style}
+      iconStyle={iconStyle}
     >
       {children}
     </Alert>
   );
 };
 
-export const Error = ({ style, children }: ScopedAlertProps) => {
+export const Error = ({ style, iconStyle, children }: ScopedAlertProps) => {
   return (
     <Alert
       icon={SvgExclamationOutline}
       color={theme.errorTextDarker}
       backgroundColor={theme.errorBackground}
       style={style}
+      iconStyle={iconStyle}
     >
       {children}
     </Alert>

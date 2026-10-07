@@ -1,11 +1,19 @@
 // @ts-strict-ignore
-import { type Database } from '@jlongster/sql.js';
+import type { Database } from '@jlongster/sql.js';
 
-import { captureBreadcrumb } from '../platform/exceptions';
-import * as sqlite from '../platform/server/sqlite';
-import { sheetForMonth } from '../shared/months';
+import { captureBreadcrumb } from '#platform/exceptions';
+import { logger } from '#platform/server/log';
+import * as sqlite from '#platform/server/sqlite';
+import { sheetForMonth } from '#shared/months';
+import * as Platform from '#shared/platform';
 
-import * as Platform from './platform';
+import type * as DbModule from './db';
+import type {
+  DbPreference,
+  DbReflectBudget,
+  DbZeroBudget,
+  DbZeroBudgetMonth,
+} from './db';
 import { Spreadsheet } from './spreadsheet/spreadsheet';
 import { resolveName } from './spreadsheet/util';
 
@@ -18,7 +26,7 @@ export function get(): Spreadsheet {
 }
 
 async function updateSpreadsheetCache(rawDb, names: string[]) {
-  await sqlite.transaction(rawDb, () => {
+  sqlite.transaction(rawDb, () => {
     names.forEach(name => {
       const node = globalSheet._getNode(name);
 
@@ -99,7 +107,7 @@ export async function loadSpreadsheet(
   const mainDb = db.getDatabase();
   let cacheDb;
 
-  if (Platform.isDesktop && cacheEnabled) {
+  if (!Platform.isBrowser && cacheEnabled) {
     // Desktop apps use a separate database for the cache. This is because it is
     // much more likely to directly work with files on desktop, and this makes
     // it a lot clearer what the true filesize of the main db is (and avoid
@@ -107,7 +115,7 @@ export async function loadSpreadsheet(
     const cachePath = db
       .getDatabasePath()
       .replace(/db\.sqlite$/, 'cache.sqlite');
-    globalCacheDb = cacheDb = sqlite.openDatabase(cachePath);
+    globalCacheDb = cacheDb = await sqlite.openDatabase(cachePath);
 
     sqlite.execQuery(
       cacheDb,
@@ -144,20 +152,20 @@ export async function loadSpreadsheet(
   }
 
   if (cacheEnabled && !isCacheDirty(mainDb, cacheDb)) {
-    const cachedRows = await sqlite.runQuery<{ key?: number; value: string }>(
+    const cachedRows = sqlite.runQuery<{ key?: number; value: string }>(
       cacheDb,
       'SELECT * FROM kvcache',
       [],
       true,
     );
-    console.log(`Loaded spreadsheet from cache (${cachedRows.length} items)`);
+    logger.log(`Loaded spreadsheet from cache (${cachedRows.length} items)`);
 
     for (const row of cachedRows) {
       const parsed = JSON.parse(row.value);
       sheet.load(row.key, parsed);
     }
   } else {
-    console.log('Loading fresh spreadsheet');
+    logger.log('Loading fresh spreadsheet');
     await loadUserBudgets(db);
   }
 
@@ -189,19 +197,20 @@ export async function reloadSpreadsheet(db): Promise<Spreadsheet> {
   }
 }
 
-export async function loadUserBudgets(db): Promise<void> {
+export async function loadUserBudgets(db: typeof DbModule): Promise<void> {
   const sheet = globalSheet;
 
   // TODO: Clear out the cache here so make sure future loads of the app
   // don't load any extra values that aren't set here
 
-  const { value: budgetType = 'rollover' } =
-    (await db.first('SELECT value from preferences WHERE id = ?', [
-      'budgetType',
-    ])) ?? {};
+  const { value: budgetType = 'envelope' } =
+    (await db.first<Pick<DbPreference, 'value'>>(
+      'SELECT value from preferences WHERE id = ?',
+      ['budgetType'],
+    )) ?? {};
 
-  const table = budgetType === 'report' ? 'reflect_budgets' : 'zero_budgets';
-  const budgets = await db.all(`
+  const table = budgetType === 'tracking' ? 'reflect_budgets' : 'zero_budgets';
+  const budgets = await db.all<DbReflectBudget | DbZeroBudget>(`
       SELECT * FROM ${table} b
       LEFT JOIN categories c ON c.id = b.category
       WHERE c.tombstone = 0
@@ -224,8 +233,10 @@ export async function loadUserBudgets(db): Promise<void> {
   }
 
   // For zero-based budgets, load the buffered amounts
-  if (budgetType !== 'report') {
-    const budgetMonths = await db.all('SELECT * FROM zero_budget_months');
+  if (budgetType !== 'tracking') {
+    const budgetMonths = await db.all<DbZeroBudgetMonth>(
+      'SELECT * FROM zero_budget_months',
+    );
     for (const budgetMonth of budgetMonths) {
       const sheetName = sheetForMonth(budgetMonth.id);
       sheet.set(`${sheetName}!buffered`, budgetMonth.buffered);

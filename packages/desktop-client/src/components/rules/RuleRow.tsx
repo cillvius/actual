@@ -1,23 +1,23 @@
 // @ts-strict-ignore
 import React, { memo, useRef } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
-import { v4 as uuid } from 'uuid';
+import { Button } from '@actual-app/components/button';
+import { SvgRightArrow2 } from '@actual-app/components/icons/v0';
+import { SpaceBetween } from '@actual-app/components/space-between';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import type { RuleEntity } from '@actual-app/core/types/models';
 
-import { friendlyOp } from 'loot-core/src/shared/rules';
-import { type RuleEntity } from 'loot-core/src/types/models';
-
-import { useContextMenu } from '../../hooks/useContextMenu';
-import { useSelectedDispatch } from '../../hooks/useSelected';
-import { SvgRightArrow2 } from '../../icons/v0';
-import { styles, theme } from '../../style';
-import { Button } from '../common/Button2';
-import { Menu } from '../common/Menu';
-import { Popover } from '../common/Popover';
-import { Stack } from '../common/Stack';
-import { Text } from '../common/Text';
-import { View } from '../common/View';
-import { SelectCell, Row, Field, Cell } from '../table';
+import { Cell, Field, Row, SelectCell } from '#components/table';
+import { useContextMenu } from '#hooks/useContextMenu';
+import { useSelectedDispatch } from '#hooks/useSelected';
+import {
+  friendlyOp,
+  groupActionsBySplitIndex,
+  translateRuleStage,
+} from '#util/rule';
 
 import { ActionExpression } from './ActionExpression';
 import { ConditionExpression } from './ConditionExpression';
@@ -44,15 +44,7 @@ export const RuleRow = memo(
     const borderColor = selected ? theme.tableBorderSelected : 'none';
     const backgroundFocus = hovered;
 
-    const actionSplits = rule.actions.reduce(
-      (acc, action) => {
-        const splitIndex = action['options']?.splitIndex ?? 0;
-        acc[splitIndex] = acc[splitIndex] ?? { id: uuid(), actions: [] };
-        acc[splitIndex].actions.push(action);
-        return acc;
-      },
-      [] as { id: string; actions: RuleEntity['actions'] }[],
-    );
+    const actionSplits = groupActionsBySplitIndex(rule.actions);
     const hasSplits = actionSplits.length > 1;
 
     const hasSchedule = rule.actions.some(({ op }) => op === 'link-schedule');
@@ -60,8 +52,23 @@ export const RuleRow = memo(
     const { t } = useTranslation();
 
     const triggerRef = useRef(null);
-    const { setMenuOpen, menuOpen, handleContextMenu, position } =
-      useContextMenu();
+
+    useContextMenu({
+      triggerRef,
+      items: [
+        onEditRule && {
+          name: 'edit',
+          text: t('Edit'),
+          onClick: () => onEditRule(rule),
+        },
+        onDeleteRule &&
+          !hasSchedule && {
+            name: 'delete',
+            text: t('Delete'),
+            onClick: () => onDeleteRule(rule),
+          },
+      ],
+    });
 
     return (
       <Row
@@ -77,44 +84,13 @@ export const RuleRow = memo(
               ? theme.tableRowBackgroundHover
               : theme.tableBackground,
         }}
-        collapsed={true}
+        collapsed
         onMouseEnter={() => onHover && onHover(rule.id)}
         onMouseLeave={() => onHover && onHover(null)}
-        onContextMenu={handleContextMenu}
       >
-        <Popover
-          triggerRef={triggerRef}
-          placement="bottom start"
-          isOpen={menuOpen}
-          onOpenChange={() => setMenuOpen(false)}
-          {...position}
-          style={{ width: 200, margin: 1 }}
-          isNonModal
-        >
-          <Menu
-            items={[
-              onEditRule && { name: 'edit', text: t('Edit') },
-              onDeleteRule &&
-                !hasSchedule && { name: 'delete', text: t('Delete') },
-            ]}
-            onMenuSelect={name => {
-              switch (name) {
-                case 'delete':
-                  onDeleteRule(rule);
-                  break;
-                case 'edit':
-                  onEditRule(rule);
-                  break;
-                default:
-                  throw new Error(`Unrecognized menu option: ${name}`);
-              }
-              setMenuOpen(false);
-            }}
-          />
-        </Popover>
         <SelectCell
           exposed={hovered || selected}
-          focused={true}
+          focused
           onSelect={e => {
             dispatchSelected({
               type: 'select',
@@ -137,13 +113,13 @@ export const RuleRow = memo(
                 padding: '3px 5px',
               }}
             >
-              {rule.stage}
+              {translateRuleStage(rule.stage)}
             </View>
           )}
         </Cell>
 
         <Field width="flex" style={{ padding: '15px 0' }} truncate={false}>
-          <Stack direction="row" align="center">
+          <SpaceBetween style={{ alignItems: 'center' }}>
             <View
               style={{ flex: 1, alignItems: 'flex-start' }}
               data-testid="conditions"
@@ -153,7 +129,7 @@ export const RuleRow = memo(
                   key={i}
                   field={cond.field}
                   op={cond.op}
-                  inline={true}
+                  inline
                   value={cond.value}
                   options={cond.options}
                   prefix={i > 0 ? friendlyOp(rule.conditionsOp) : null}
@@ -189,13 +165,13 @@ export const RuleRow = memo(
                       }}
                     >
                       <Text
+                        size="medium"
                         style={{
-                          ...styles.smallText,
                           color: theme.pageTextLight,
                           marginBottom: 6,
                         }}
                       >
-                        {i ? `Split ${i}` : 'Apply to all'}
+                        {i ? t('Split {{num}}', { num: i }) : t('Apply to all')}
                       </Text>
                       {split.actions.map((action, j) => (
                         <ActionExpression
@@ -214,11 +190,13 @@ export const RuleRow = memo(
                     />
                   ))}
             </View>
-          </Stack>
+          </SpaceBetween>
         </Field>
 
         <Cell name="edit" plain style={{ padding: '0 15px', paddingLeft: 5 }}>
-          <Button onPress={() => onEditRule(rule)}>{t('Edit')}</Button>
+          <Button onPress={() => onEditRule(rule)}>
+            <Trans>Edit</Trans>
+          </Button>
         </Cell>
       </Row>
     );

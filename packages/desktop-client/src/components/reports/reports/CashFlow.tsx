@@ -1,58 +1,62 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 
+import { AlignedText } from '@actual-app/components/aligned-text';
+import { Block } from '@actual-app/components/block';
+import { Button } from '@actual-app/components/button';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { Paragraph } from '@actual-app/components/paragraph';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
+import * as monthUtils from '@actual-app/core/shared/months';
+import type {
+  CashFlowWidget,
+  RuleConditionEntity,
+  TimeFrame,
+} from '@actual-app/core/types/models';
 import * as d from 'date-fns';
 
-import { addNotification } from 'loot-core/client/actions';
-import { useWidget } from 'loot-core/client/data-hooks/widget';
-import { send } from 'loot-core/src/platform/client/fetch';
-import * as monthUtils from 'loot-core/src/shared/months';
-import { integerToCurrency } from 'loot-core/src/shared/util';
-import {
-  type CashFlowWidget,
-  type RuleConditionEntity,
-  type TimeFrame,
-} from 'loot-core/types/models';
+import { EditablePageHeaderTitle } from '#components/EditablePageHeaderTitle';
+import { FinancialText } from '#components/FinancialText';
+import { MobileBackButton } from '#components/mobile/MobileBackButton';
+import { MobilePageHeader, Page, PageHeader } from '#components/Page';
+import { PrivacyFilter } from '#components/PrivacyFilter';
+import { Change } from '#components/reports/Change';
+import { CashFlowGraph } from '#components/reports/graphs/CashFlowGraph';
+import { Header } from '#components/reports/Header';
+import { LoadingIndicator } from '#components/reports/LoadingIndicator';
+import { calculateTimeRange } from '#components/reports/reportRanges';
+import { cashFlowByDate } from '#components/reports/spreadsheets/cash-flow-spreadsheet';
+import { useReport } from '#components/reports/useReport';
+import { useDashboardWidget } from '#hooks/useDashboardWidget';
+import { useFormat } from '#hooks/useFormat';
+import { useLocale } from '#hooks/useLocale';
+import { useNavigate } from '#hooks/useNavigate';
+import { useRuleConditionFilters } from '#hooks/useRuleConditionFilters';
+import { useSyncedPref } from '#hooks/useSyncedPref';
+import { addNotification } from '#notifications/notificationsSlice';
+import { useDispatch } from '#redux';
+import { useUpdateDashboardWidgetMutation } from '#reports/mutations';
 
-import { useFilters } from '../../../hooks/useFilters';
-import { useNavigate } from '../../../hooks/useNavigate';
-import { useSyncedPref } from '../../../hooks/useSyncedPref';
-import { useDispatch } from '../../../redux';
-import { theme } from '../../../style';
-import { AlignedText } from '../../common/AlignedText';
-import { Block } from '../../common/Block';
-import { Button } from '../../common/Button2';
-import { Paragraph } from '../../common/Paragraph';
-import { Text } from '../../common/Text';
-import { View } from '../../common/View';
-import { EditablePageHeaderTitle } from '../../EditablePageHeaderTitle';
-import { MobileBackButton } from '../../mobile/MobileBackButton';
-import { MobilePageHeader, Page, PageHeader } from '../../Page';
-import { PrivacyFilter } from '../../PrivacyFilter';
-import { useResponsive } from '../../responsive/ResponsiveProvider';
-import { Change } from '../Change';
-import { CashFlowGraph } from '../graphs/CashFlowGraph';
-import { Header } from '../Header';
-import { LoadingIndicator } from '../LoadingIndicator';
-import { calculateTimeRange } from '../reportRanges';
-import { cashFlowByDate } from '../spreadsheets/cash-flow-spreadsheet';
-import { useReport } from '../useReport';
-
+// Month-shaped so the range means the whole current month (the query clamps
+// to today); day-shaped values here would slide by days instead.
 export const defaultTimeFrame = {
-  start: monthUtils.dayFromDate(monthUtils.currentMonth()),
-  end: monthUtils.currentDay(),
+  start: monthUtils.currentMonth(),
+  end: monthUtils.currentMonth(),
   mode: 'sliding-window',
 } satisfies TimeFrame;
 
 export function CashFlow() {
   const params = useParams();
-  const { data: widget, isLoading } = useWidget<CashFlowWidget>(
-    params.id ?? '',
-    'cash-flow-card',
-  );
+  const { data: widget, isPending } = useDashboardWidget<CashFlowWidget>({
+    id: params.id,
+    type: 'cash-flow-card',
+  });
 
-  if (isLoading) {
+  if (isPending) {
     return <LoadingIndicator />;
   }
 
@@ -64,8 +68,10 @@ type CashFlowInnerProps = {
 };
 
 function CashFlowInner({ widget }: CashFlowInnerProps) {
+  const locale = useLocale();
   const dispatch = useDispatch();
   const { t } = useTranslation();
+  const format = useFormat();
 
   const {
     conditions,
@@ -74,7 +80,7 @@ function CashFlowInner({ widget }: CashFlowInnerProps) {
     onDelete: onDeleteFilter,
     onUpdate: onUpdateFilter,
     onConditionsOpChange,
-  } = useFilters<RuleConditionEntity>(
+  } = useRuleConditionFilters<RuleConditionEntity>(
     widget?.meta?.conditions,
     widget?.meta?.conditionsOp,
   );
@@ -84,91 +90,136 @@ function CashFlowInner({ widget }: CashFlowInnerProps) {
     pretty: string;
   }>>(null);
 
-  const [initialStart, initialEnd, initialMode] = calculateTimeRange(
-    widget?.meta?.timeFrame,
-    defaultTimeFrame,
-  );
-  const [start, setStart] = useState(initialStart);
-  const [end, setEnd] = useState(initialEnd);
-  const [mode, setMode] = useState(initialMode);
+  const [start, setStart] = useState(monthUtils.currentMonth());
+  const [end, setEnd] = useState(monthUtils.currentMonth());
+  const [mode, setMode] = useState<TimeFrame['mode']>('sliding-window');
   const [showBalance, setShowBalance] = useState(
     widget?.meta?.showBalance ?? true,
   );
+  const [latestTransaction, setLatestTransaction] = useState('');
 
-  const [isConcise, setIsConcise] = useState(() => {
+  const [isConcise, setIsConcise] = useState(false);
+
+  useEffect(() => {
     const numDays = d.differenceInCalendarDays(
       d.parseISO(end),
       d.parseISO(start),
     );
-    return numDays > 31 * 3;
-  });
+    setIsConcise(numDays > 31 * 3);
+  }, [start, end]);
 
   const params = useMemo(
-    () => cashFlowByDate(start, end, isConcise, conditions, conditionsOp),
-    [start, end, isConcise, conditions, conditionsOp],
+    () =>
+      cashFlowByDate(
+        start,
+        end,
+        isConcise,
+        conditions,
+        conditionsOp,
+        locale,
+        format,
+      ),
+    [start, end, isConcise, conditions, conditionsOp, locale, format],
   );
   const data = useReport('cash_flow', params);
 
   useEffect(() => {
     async function run() {
-      const trans = await send('get-earliest-transaction');
-      const earliestMonth = trans
-        ? monthUtils.monthFromDate(d.parseISO(trans.date))
-        : monthUtils.currentMonth();
+      const earliestTransaction = await send('get-earliest-transaction');
+      setEarliestTransaction(
+        earliestTransaction
+          ? earliestTransaction.date
+          : monthUtils.currentDay(),
+      );
+
+      const latestTransaction = await send('get-latest-transaction');
+      setLatestTransaction(
+        latestTransaction ? latestTransaction.date : monthUtils.currentDay(),
+      );
+
+      const currentMonth = monthUtils.currentMonth();
+      const earliestMonth = earliestTransaction
+        ? monthUtils.monthFromDate(d.parseISO(earliestTransaction.date))
+        : currentMonth;
+      const latestTransactionMonth = latestTransaction
+        ? monthUtils.monthFromDate(d.parseISO(latestTransaction.date))
+        : currentMonth;
+
+      const latestMonth =
+        latestTransactionMonth > currentMonth
+          ? latestTransactionMonth
+          : currentMonth;
 
       const allMonths = monthUtils
-        .rangeInclusive(earliestMonth, monthUtils.currentMonth())
+        .rangeInclusive(earliestMonth, latestMonth)
         .map(month => ({
           name: month,
-          pretty: monthUtils.format(month, 'MMMM, yyyy'),
+          pretty: monthUtils.format(month, 'MMMM yyyy', locale),
         }))
         .reverse();
 
       setAllMonths(allMonths);
     }
-    run();
-  }, []);
+    void run();
+  }, [locale]);
+
+  useEffect(() => {
+    if (latestTransaction) {
+      const [initialStart, initialEnd, initialMode] = calculateTimeRange(
+        widget?.meta?.timeFrame,
+        defaultTimeFrame,
+        latestTransaction,
+      );
+      setStart(initialStart);
+      setEnd(initialEnd);
+      setMode(initialMode);
+    }
+  }, [latestTransaction, widget?.meta?.timeFrame]);
 
   function onChangeDates(start: string, end: string, mode: TimeFrame['mode']) {
-    const numDays = d.differenceInCalendarDays(
-      d.parseISO(end),
-      d.parseISO(start),
-    );
-    const isConcise = numDays > 31 * 3;
-
     setStart(start);
     setEnd(end);
     setMode(mode);
-    setIsConcise(isConcise);
   }
 
   const navigate = useNavigate();
   const { isNarrowWidth } = useResponsive();
+  const updateDashboardWidgetMutation = useUpdateDashboardWidgetMutation();
 
   async function onSaveWidget() {
     if (!widget) {
       throw new Error('No widget that could be saved.');
     }
 
-    await send('dashboard-update-widget', {
-      id: widget.id,
-      meta: {
-        ...(widget.meta ?? {}),
-        conditions,
-        conditionsOp,
-        timeFrame: {
-          start,
-          end,
-          mode,
+    updateDashboardWidgetMutation.mutate(
+      {
+        widget: {
+          id: widget.id,
+          meta: {
+            ...(widget.meta ?? {}),
+            conditions,
+            conditionsOp,
+            timeFrame: {
+              start,
+              end,
+              mode,
+            },
+            showBalance,
+          },
         },
-        showBalance,
       },
-    });
-    dispatch(
-      addNotification({
-        type: 'message',
-        message: t('Dashboard widget successfully saved.'),
-      }),
+      {
+        onSuccess: () => {
+          dispatch(
+            addNotification({
+              notification: {
+                type: 'message',
+                message: t('Dashboard widget successfully saved.'),
+              },
+            }),
+          );
+        },
+      },
     );
   }
 
@@ -179,16 +230,18 @@ function CashFlowInner({ widget }: CashFlowInnerProps) {
     }
 
     const name = newName || t('Cash Flow');
-    await send('dashboard-update-widget', {
-      id: widget.id,
-      meta: {
-        ...(widget.meta ?? {}),
-        name,
+    updateDashboardWidgetMutation.mutate({
+      widget: {
+        id: widget.id,
+        meta: {
+          ...(widget.meta ?? {}),
+          name,
+        },
       },
     });
   };
 
-  const [earliestTransaction, _] = useState('');
+  const [earliestTransaction, setEarliestTransaction] = useState('');
   const [_firstDayOfWeekIdx] = useSyncedPref('firstDayOfWeekIdx');
   const firstDayOfWeekIdx = _firstDayOfWeekIdx || '0';
 
@@ -230,7 +283,9 @@ function CashFlowInner({ widget }: CashFlowInnerProps) {
         start={start}
         end={end}
         earliestTransaction={earliestTransaction}
+        latestTransaction={latestTransaction}
         firstDayOfWeekIdx={firstDayOfWeekIdx}
+        granularities={['month', 'day']}
         mode={mode}
         show1Month
         onChangeDates={onChangeDates}
@@ -241,17 +296,15 @@ function CashFlowInner({ widget }: CashFlowInnerProps) {
         conditionsOp={conditionsOp}
         onConditionsOpChange={onConditionsOpChange}
       >
-        <View style={{ flexDirection: 'row', gap: 10 }}>
-          <Button onPress={() => setShowBalance(state => !state)}>
-            {showBalance ? t('Hide balance') : t('Show balance')}
-          </Button>
+        <Button onPress={() => setShowBalance(state => !state)}>
+          {showBalance ? t('Hide balance') : t('Show balance')}
+        </Button>
 
-          {widget && (
-            <Button variant="primary" onPress={onSaveWidget}>
-              <Trans>Save widget</Trans>
-            </Button>
-          )}
-        </View>
+        {widget && (
+          <Button variant="primary" onPress={onSaveWidget}>
+            <Trans>Save widget</Trans>
+          </Button>
+        )}
       </Header>
       <View
         style={{
@@ -277,9 +330,11 @@ function CashFlowInner({ widget }: CashFlowInnerProps) {
               </Block>
             }
             right={
-              <Text style={{ fontWeight: 600 }}>
-                <PrivacyFilter>{integerToCurrency(totalIncome)}</PrivacyFilter>
-              </Text>
+              <FinancialText style={{ fontWeight: 600 }}>
+                <PrivacyFilter>
+                  {format(totalIncome, 'financial')}
+                </PrivacyFilter>
+              </FinancialText>
             }
           />
 
@@ -291,11 +346,11 @@ function CashFlowInner({ widget }: CashFlowInnerProps) {
               </Block>
             }
             right={
-              <Text style={{ fontWeight: 600 }}>
+              <FinancialText style={{ fontWeight: 600 }}>
                 <PrivacyFilter>
-                  {integerToCurrency(totalExpenses)}
+                  {format(totalExpenses, 'financial')}
                 </PrivacyFilter>
-              </Text>
+              </FinancialText>
             }
           />
 
@@ -307,11 +362,11 @@ function CashFlowInner({ widget }: CashFlowInnerProps) {
               </Block>
             }
             right={
-              <Text style={{ fontWeight: 600 }}>
+              <FinancialText style={{ fontWeight: 600 }}>
                 <PrivacyFilter>
-                  {integerToCurrency(totalTransfers)}
+                  {format(totalTransfers, 'financial')}
                 </PrivacyFilter>
-              </Text>
+              </FinancialText>
             }
           />
           <Text style={{ fontWeight: 600 }}>
@@ -340,7 +395,7 @@ function CashFlowInner({ widget }: CashFlowInnerProps) {
             <Paragraph>
               Cash flow shows the balance of your budgeted accounts over time,
               and the amount of expenses/income each day or month. Your budgeted
-              accounts are considered to be “cash on hand,” so this gives you a
+              accounts are considered to be "cash on hand," so this gives you a
               picture of how available money fluctuates.
             </Paragraph>
           </Trans>

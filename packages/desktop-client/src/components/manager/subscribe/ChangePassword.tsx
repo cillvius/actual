@@ -2,13 +2,13 @@
 import React, { useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { send } from 'loot-core/src/platform/client/fetch';
+import { Button } from '@actual-app/components/button';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
 
-import { useNavigate } from '../../../hooks/useNavigate';
-import { theme } from '../../../style';
-import { Button } from '../../common/Button2';
-import { Text } from '../../common/Text';
-import { View } from '../../common/View';
+import { useNavigate } from '#hooks/useNavigate';
 
 import { Title } from './common';
 import { ConfirmPasswordForm } from './ConfirmPasswordForm';
@@ -23,13 +23,13 @@ export function ChangePassword() {
   function getErrorMessage(error) {
     switch (error) {
       case 'invalid-password':
-        return 'Password cannot be empty';
+        return t('Password cannot be empty');
       case 'password-match':
-        return 'Passwords do not match';
+        return t('Passwords do not match');
       case 'network-failure':
-        return 'Unable to contact the server';
+        return t('Unable to contact the server');
       default:
-        return 'Internal error';
+        return t('Internal error');
     }
   }
 
@@ -42,7 +42,7 @@ export function ChangePassword() {
     } else {
       setMessage(t('Password successfully changed'));
       await send('subscribe-sign-in', { password });
-      navigate('/');
+      void navigate('/');
     }
   }
 
@@ -64,11 +64,11 @@ export function ChangePassword() {
 
       {error && (
         <Text
+          size="large"
           style={{
             marginTop: 20,
             color: theme.errorText,
             borderRadius: 4,
-            fontSize: 15,
           }}
         >
           {getErrorMessage(error)}
@@ -77,11 +77,11 @@ export function ChangePassword() {
 
       {msg && (
         <Text
+          size="large"
           style={{
             marginTop: 20,
             color: theme.noticeTextLight,
             borderRadius: 4,
-            fontSize: 15,
           }}
         >
           {msg}

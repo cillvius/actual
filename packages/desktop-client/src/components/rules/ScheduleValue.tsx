@@ -1,45 +1,39 @@
 import React, { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { useSchedules } from 'loot-core/client/data-hooks/schedules';
-import { q } from 'loot-core/shared/query';
-import { getPayeesById } from 'loot-core/src/client/queries/queriesSlice';
-import { describeSchedule } from 'loot-core/src/shared/schedules';
-import { type ScheduleEntity } from 'loot-core/src/types/models';
+import { AnimatedLoading } from '@actual-app/components/icons/AnimatedLoading';
+import { View } from '@actual-app/components/view';
+import { q } from '@actual-app/core/shared/query';
+import type { ScheduleEntity } from '@actual-app/core/types/models';
 
-import { usePayees } from '../../hooks/usePayees';
-import { AnimatedLoading } from '../../icons/AnimatedLoading';
-import { View } from '../common/View';
+import { usePayeesById } from '#hooks/usePayees';
+import { useSchedules } from '#hooks/useSchedules';
+import { describeSchedule } from '#util/schedule';
 
 import { Value } from './Value';
 
 type ScheduleValueProps = {
-  value: ScheduleEntity;
+  value: ScheduleEntity['id'];
 };
 
 export function ScheduleValue({ value }: ScheduleValueProps) {
-  const payees = usePayees();
-  const byId = getPayeesById(payees);
+  const { t } = useTranslation();
+  const { data: byId = {} } = usePayeesById();
   const schedulesQuery = useMemo(() => q('schedules').select('*'), []);
   const { schedules = [], isLoading } = useSchedules({ query: schedulesQuery });
 
   if (isLoading) {
     return (
-      <View aria-label="Loading..." style={{ display: 'inline-flex' }}>
+      <View aria-label={t('Loading...')} style={{ display: 'inline-flex' }}>
         <AnimatedLoading width={10} height={10} />
       </View>
     );
   }
 
-  return (
-    <Value
-      value={value}
-      field="rule"
-      data={schedules}
-      // TODO: this manual type coercion does not make much sense -
-      // should we instead do `schedule._payee.id`?
-      describe={schedule =>
-        describeSchedule(schedule, byId[schedule._payee as unknown as string])
-      }
-    />
-  );
+  const schedule = schedules.find(item => item.id === value);
+  const display = schedule
+    ? describeSchedule(schedule, byId[schedule._payee])
+    : t('(deleted)');
+
+  return <Value value={display} field="notes" valueIsRaw />;
 }

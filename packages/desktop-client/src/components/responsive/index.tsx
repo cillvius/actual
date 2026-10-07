@@ -1,7 +1,8 @@
-import { LoadComponent } from '../util/LoadComponent';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+
+import { LoadComponent } from '#components/util/LoadComponent';
 
 import type * as NarrowComponents from './narrow';
-import { useResponsive } from './ResponsiveProvider';
 import type * as WideComponents from './wide';
 
 const loadNarrow = () =>

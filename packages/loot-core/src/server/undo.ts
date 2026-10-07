@@ -1,12 +1,13 @@
 // @ts-strict-ignore
 import { Timestamp } from '@actual-app/crdt';
 
-import * as connection from '../platform/server/connection';
-import { getIn } from '../shared/util';
-import { type HandlerFunctions } from '../types/handlers';
+import * as connection from '#platform/server/connection';
+import { getIn } from '#shared/util';
+import type { HandlerFunctions } from '#types/handlers';
 
-import { withMutatorContext, getMutatorContext } from './mutators';
-import { Message, sendMessages } from './sync';
+import { getMutatorContext, withMutatorContext } from './mutators';
+import { sendMessages } from './sync';
+import type { Message } from './sync';
 
 // A marker always sits as the first entry to simplify logic
 type MarkerMessage = { type: 'marker'; meta?: unknown };
@@ -91,11 +92,17 @@ export function withUndo<T>(
   );
 }
 
-export function undoable<T extends HandlerFunctions>(func: T) {
+export function undoable<T extends HandlerFunctions>(
+  func: T,
+  metaFunc?: (...metaArgs: Parameters<T>) => unknown,
+) {
   return (...args: Parameters<T>) => {
-    return withUndo<Awaited<ReturnType<T>>>(() => {
-      return func.apply(null, args);
-    });
+    return withUndo<Awaited<ReturnType<T>>>(
+      () => {
+        return func.apply(null, args);
+      },
+      metaFunc ? metaFunc(...args) : undefined,
+    );
   };
 }
 

@@ -1,40 +1,54 @@
-import { type MouseEventHandler, useState } from 'react';
+import { useCallback } from 'react';
+import type { RefObject } from 'react';
 
-import { useFeatureFlag } from './useFeatureFlag';
+import type { Falsy } from '@actual-app/core/types/util';
 
-export function useContextMenu() {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [asContextMenu, setAsContextMenu] = useState(false);
-  const [position, setPosition] = useState({ crossOffset: 0, offset: 0 });
-  const contextMenusEnabled = useFeatureFlag('contextMenus');
+import {
+  addItems,
+  setContextMenuPosition,
+} from '#contextmenu/contextMenuSlice';
+import type { ContextMenuItem } from '#contextmenu/types';
+import { useRefEventListener } from '#hooks/useRefEventListener';
+import { useDispatch } from '#redux';
 
-  const handleContextMenu: MouseEventHandler<HTMLElement> = e => {
-    if (!contextMenusEnabled) return;
+type UseContextMenuProps = {
+  triggerRef: RefObject<HTMLElement | null>;
+  enabled?: boolean;
+  items: Falsy<ContextMenuItem>[];
+};
 
-    e.preventDefault();
-    setAsContextMenu(true);
+export function useContextMenu({
+  triggerRef,
+  enabled = true,
+  items,
+}: UseContextMenuProps) {
+  const dispatch = useDispatch();
 
-    const rect = e.currentTarget.getBoundingClientRect();
-    setPosition({
-      crossOffset: e.clientX - rect.left,
-      offset: e.clientY - rect.bottom,
-    });
-    setMenuOpen(true);
-  };
+  const processedItems = items.filter(
+    item => item && (typeof item === 'symbol' || !item.hidden),
+  ) as ContextMenuItem[];
 
-  const resetPosition = (crossOffset = 0, offset = 0) => {
-    setPosition({ crossOffset, offset });
-  };
+  useRefEventListener(triggerRef, 'contextmenu', (e: MouseEvent) => {
+    if (enabled) {
+      e.preventDefault();
+      dispatch(addItems(processedItems));
+      dispatch(setContextMenuPosition({ x: e.clientX, y: e.clientY }));
+    }
+  });
 
-  return {
-    menuOpen,
-    setMenuOpen: (open: boolean) => {
-      setMenuOpen(open);
-      setAsContextMenu(false);
-    },
-    position,
-    handleContextMenu,
-    resetPosition,
-    asContextMenu,
-  };
+  const handleContextMenu = useCallback(() => {
+    if (!triggerRef.current || !enabled) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    // prefer MouseEvent bubbling over dispatching events to
+    // allow nesting context menu actions
+    triggerRef.current.dispatchEvent(
+      new MouseEvent('contextmenu', {
+        clientX: rect.x,
+        clientY: rect.y + rect.height,
+        bubbles: true,
+      }),
+    );
+  }, [triggerRef, enabled]);
+
+  return { handleContextMenu };
 }

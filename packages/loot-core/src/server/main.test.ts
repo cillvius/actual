@@ -1,25 +1,26 @@
 // @ts-strict-ignore
-import { getClock, deserializeClock } from '@actual-app/crdt';
+import { deserializeClock, getClock } from '@actual-app/crdt';
+import { v4 as uuidv4 } from 'uuid';
 
-import { expectSnapshotWithDiffer } from '../mocks/util';
-import * as connection from '../platform/server/connection';
-import * as fs from '../platform/server/fs';
-import * as monthUtils from '../shared/months';
+import { expectSnapshotWithDiffer } from '#mocks/util';
+import * as connection from '#platform/server/connection';
+import * as fs from '#platform/server/fs';
+import * as monthUtils from '#shared/months';
 
 import * as budgetActions from './budget/actions';
 import * as budget from './budget/base';
 import * as db from './db';
 import { handlers } from './main';
 import {
-  runHandler,
-  runMutator,
   disableGlobalMutations,
   enableGlobalMutations,
+  runHandler,
+  runMutator,
 } from './mutators';
 import * as prefs from './prefs';
 import * as sheet from './sheet';
 
-jest.mock('./post');
+vi.mock('./post');
 
 beforeEach(async () => {
   await global.emptyDatabase()();
@@ -67,7 +68,9 @@ describe('Budgets', () => {
 
     // Grab the clock to compare later
     await db.openDatabase('test-budget');
-    const row = await db.first('SELECT * FROM messages_clock');
+    const row = await db.first<db.DbClockMessage>(
+      'SELECT * FROM messages_clock',
+    );
 
     const { error } = await runHandler(handlers['load-budget'], {
       id: 'test-budget',
@@ -85,9 +88,9 @@ describe('Budgets', () => {
     await createTestBudget('default-budget-template');
 
     await db.openDatabase('test-budget');
-    await db.runQuery('INSERT INTO __migrations__ (id) VALUES (1000)');
+    db.runQuery('INSERT INTO __migrations__ (id) VALUES (1000)');
 
-    const spy = jest.spyOn(console, 'warn').mockImplementation();
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => null);
 
     const { error } = await runHandler(handlers['load-budget'], {
       id: 'test-budget',
@@ -133,20 +136,23 @@ describe('Accounts', () => {
       date: '2017-01-01',
     });
     const differ = expectSnapshotWithDiffer(
-      await db.all('SELECT * FROM transactions'),
+      await db.all<db.DbTransaction>('SELECT * FROM transactions'),
     );
 
-    let transaction = await db.getTransaction(id);
     await runHandler(handlers['transaction-update'], {
       ...(await db.getTransaction(id)),
       payee: 'transfer-three',
       date: '2017-01-03',
     });
-    differ.expectToMatchDiff(await db.all('SELECT * FROM transactions'));
+    differ.expectToMatchDiff(
+      await db.all<db.DbTransaction>('SELECT * FROM transactions'),
+    );
 
-    transaction = await db.getTransaction(id);
+    const transaction = await db.getTransaction(id);
     await runHandler(handlers['transaction-delete'], transaction);
-    differ.expectToMatchDiff(await db.all('SELECT * FROM transactions'));
+    differ.expectToMatchDiff(
+      await db.all<db.DbTransaction>('SELECT * FROM transactions'),
+    );
   });
 });
 
@@ -173,8 +179,9 @@ describe('Budget', () => {
     // Add a transaction (which needs an account) earlier then the
     // current earliest budget to test if it creates the necessary
     // budgets for the earlier months
-    await db.runQuery("INSERT INTO accounts (id, name) VALUES ('one', 'boa')");
+    db.runQuery("INSERT INTO accounts (id, name) VALUES ('one', 'boa')");
     await runHandler(handlers['transaction-add'], {
+      id: uuidv4(),
       date: '2016-05-06',
       amount: 50,
       account: 'one',
@@ -195,33 +202,26 @@ describe('Budget', () => {
   test('budget updates when changing a category', async () => {
     const spreadsheet = await sheet.loadSpreadsheet(db);
     function captureChangedCells(func) {
-      return new Promise<unknown[]>(async resolve => {
+      return new Promise<unknown[]>(resolve => {
         let changed = [];
         const remove = spreadsheet.addEventListener('change', ({ names }) => {
           changed = changed.concat(names);
         });
-        await func();
-        remove();
-        spreadsheet.onFinish(() => {
-          resolve(changed);
+        func().then(() => {
+          remove();
+          spreadsheet.onFinish(() => {
+            resolve(changed);
+          });
         });
       });
     }
 
     // Force the system to start tracking these months so budgets are
     // automatically updated when adding/deleting categories
-    await db.runQuery('INSERT INTO created_budgets (month) VALUES (?)', [
-      '2017-01',
-    ]);
-    await db.runQuery('INSERT INTO created_budgets (month) VALUES (?)', [
-      '2017-02',
-    ]);
-    await db.runQuery('INSERT INTO created_budgets (month) VALUES (?)', [
-      '2017-03',
-    ]);
-    await db.runQuery('INSERT INTO created_budgets (month) VALUES (?)', [
-      '2017-04',
-    ]);
+    db.runQuery('INSERT INTO created_budgets (month) VALUES (?)', ['2017-01']);
+    db.runQuery('INSERT INTO created_budgets (month) VALUES (?)', ['2017-02']);
+    db.runQuery('INSERT INTO created_budgets (month) VALUES (?)', ['2017-03']);
+    db.runQuery('INSERT INTO created_budgets (month) VALUES (?)', ['2017-04']);
 
     let categories;
     await captureChangedCells(async () => {
@@ -248,7 +248,7 @@ describe('Budget', () => {
       ];
     });
 
-    await db.runQuery("INSERT INTO accounts (id, name) VALUES ('boa', 'boa')");
+    db.runQuery("INSERT INTO accounts (id, name) VALUES ('boa', 'boa')");
     const trans = {
       id: 'boa-transaction',
       date: '2017-02-06',
@@ -260,7 +260,9 @@ describe('Budget', () => {
     let changed = await captureChangedCells(() =>
       runHandler(handlers['transaction-add'], trans),
     );
-    expect(changed.sort()).toMatchSnapshot();
+    expect(
+      changed.sort((a, b) => (a > b ? 1 : a < b ? -1 : 0)),
+    ).toMatchSnapshot();
     // Test updates
     changed = await captureChangedCells(async () => {
       await runHandler(handlers['transaction-update'], {
@@ -268,12 +270,16 @@ describe('Budget', () => {
         amount: 7000,
       });
     });
-    expect(changed.sort()).toMatchSnapshot();
+    expect(
+      changed.sort((a, b) => (a > b ? 1 : a < b ? -1 : 0)),
+    ).toMatchSnapshot();
     // Test deletions
     changed = await captureChangedCells(async () => {
       await runHandler(handlers['transaction-delete'], { id: trans.id });
     });
-    expect(changed.sort()).toMatchSnapshot();
+    expect(
+      changed.sort((a, b) => (a > b ? 1 : a < b ? -1 : 0)),
+    ).toMatchSnapshot();
   });
 });
 
@@ -363,11 +369,12 @@ describe('Categories', () => {
 
     // Transfering an income category to an expense just doesn't make
     // sense. Make sure this doesn't do anything.
-    const { error } = await runHandler(handlers['category-delete'], {
-      id: 'income1',
-      transferId: 'bar',
-    });
-    expect(error).toBe('category-type');
+    await expect(
+      runHandler(handlers['category-delete'], {
+        id: 'income1',
+        transferId: 'bar',
+      }),
+    ).rejects.toThrow('Cannot transfer between income and expense categories.');
 
     let categories = await db.getCategories();
     expect(categories.find(cat => cat.id === 'income1')).toBeDefined();
@@ -380,5 +387,59 @@ describe('Categories', () => {
 
     categories = await db.getCategories();
     expect(categories.find(cat => cat.id === 'income1')).not.toBeDefined();
+  });
+
+  test('do not count as overspent when deleted', async () => {
+    await sheet.loadSpreadsheet(db);
+
+    await runMutator(async () => {
+      await db.insertCategoryGroup({ id: 'group1', name: 'group1' });
+      await db.insertCategoryGroup({
+        id: 'group2',
+        name: 'income',
+        is_income: 1,
+      });
+      await db.insertCategory({ id: 'foo', name: 'foo', cat_group: 'group1' });
+      await db.insertCategory({ id: 'bar', name: 'bar', cat_group: 'group1' });
+      await db.insertAccount({ id: 'acct', name: 'acct' });
+
+      // A deposit straight into the category, like a refund
+      await db.insertTransaction({
+        date: '2017-01-01',
+        account: 'acct',
+        amount: 10000,
+        category: 'foo',
+      });
+    });
+
+    await budget.createAllBudgets();
+
+    // Move 1000 from `foo` to `bar`, which leaves `foo` with a negative
+    // budgeted amount
+    await budgetActions.setBudget({
+      category: 'foo',
+      month: '2017-01',
+      amount: -1000,
+    });
+    await budgetActions.setBudget({
+      category: 'bar',
+      month: '2017-01',
+      amount: 1000,
+    });
+    await sheet.waitOnSpreadsheet();
+
+    const nextSheetName = monthUtils.sheetForMonth('2017-02');
+    expect(sheet.getCellValue(nextSheetName, 'last-month-overspent')).toBe(0);
+    const toBudget = sheet.getCellValue(nextSheetName, 'to-budget');
+
+    await runHandler(handlers['category-delete'], {
+      id: 'foo',
+      transferId: 'bar',
+    });
+    await sheet.waitOnSpreadsheet();
+
+    // The deleted category should not leave any overspending behind
+    expect(sheet.getCellValue(nextSheetName, 'last-month-overspent')).toBe(0);
+    expect(sheet.getCellValue(nextSheetName, 'to-budget')).toBe(toBudget);
   });
 });

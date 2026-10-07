@@ -1,13 +1,15 @@
 import React from 'react';
 import { Trans } from 'react-i18next';
-import { useTransition, animated } from 'react-spring';
+import { animated, useTransition } from 'react-spring';
 
-import { useSelector } from '../redux';
-import { theme, styles } from '../style';
+import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+
+import { useSelector } from '#redux';
 
 import { AnimatedRefresh } from './AnimatedRefresh';
-import { Text } from './common/Text';
-import { View } from './common/View';
 
 export function BankSyncStatus() {
   const accountsSyncing = useSelector(state => state.account.accountsSyncing);
@@ -20,7 +22,6 @@ export function BankSyncStatus() {
       from: { opacity: 0, transform: 'translateY(-100px)' },
       enter: { opacity: 1, transform: 'translateY(0)' },
       leave: { opacity: 0, transform: 'translateY(-100px)' },
-      unique: true,
     },
   );
 

@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 
-import electron, { BrowserWindow } from 'electron';
+import electron from 'electron';
+import type { BrowserWindow } from 'electron';
 
 type WindowState = Electron.Rectangle & {
   isMaximized?: boolean;
@@ -23,7 +24,7 @@ async function loadState() {
     state = JSON.parse(
       fs.readFileSync(path.join(getDataDir(), 'window.json'), 'utf8'),
     );
-  } catch (e) {
+  } catch {
     console.log('Could not load window state');
   }
 
@@ -130,6 +131,16 @@ function validateState(state?: WindowState): Partial<WindowState> {
 }
 
 export async function get() {
+  if (process.env.EXECUTION_CONTEXT === 'playwright') {
+    // For Playwright screenshots to be consistent across machine we need a fixed window size
+    return {
+      x: 100,
+      y: 50,
+      width: 1300,
+      height: 800,
+    };
+  }
+
   const screen = electron.screen;
   const displayBounds = screen.getPrimaryDisplay().bounds;
 

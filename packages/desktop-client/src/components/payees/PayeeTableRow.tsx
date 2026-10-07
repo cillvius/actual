@@ -1,18 +1,17 @@
 // @ts-strict-ignore
-import { memo, useRef, type CSSProperties } from 'react';
-import { Trans, useTranslation } from 'react-i18next';
+import { memo, useMemo, useRef } from 'react';
+import type { CSSProperties } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { type PayeeEntity } from 'loot-core/src/types/models';
+import {
+  SvgArrowThinRight,
+  SvgBookmark,
+  SvgLightBulb,
+} from '@actual-app/components/icons/v1';
+import { theme } from '@actual-app/components/theme';
+import { Tooltip } from '@actual-app/components/tooltip';
+import type { PayeeEntity } from '@actual-app/core/types/models';
 
-import { useContextMenu } from '../../hooks/useContextMenu';
-import { useSelectedDispatch } from '../../hooks/useSelected';
-import { useSyncedPref } from '../../hooks/useSyncedPref';
-import { SvgArrowThinRight, SvgBookmark, SvgLightBulb } from '../../icons/v1';
-import { theme } from '../../style';
-import { Menu } from '../common/Menu';
-import { Popover } from '../common/Popover';
-import { Text } from '../common/Text';
-import { Tooltip } from '../common/Tooltip';
 import {
   Cell,
   CellButton,
@@ -20,7 +19,12 @@ import {
   InputCell,
   Row,
   SelectCell,
-} from '../table';
+} from '#components/table';
+import { useContextMenu } from '#hooks/useContextMenu';
+import { useSelectedDispatch, useSelectedItems } from '#hooks/useSelected';
+import { useSyncedPref } from '#hooks/useSyncedPref';
+
+import { PayeeRuleCountLabel } from './PayeeRuleCountLabel';
 
 type RuleButtonProps = {
   ruleCount: number;
@@ -30,8 +34,6 @@ type RuleButtonProps = {
 };
 
 function RuleButton({ ruleCount, focused, onEdit, onClick }: RuleButtonProps) {
-  const count = ruleCount;
-
   return (
     <Cell
       name="rule-count"
@@ -48,17 +50,13 @@ function RuleButton({ ruleCount, focused, onEdit, onClick }: RuleButtonProps) {
           border: '1px solid ' + theme.noticeBackground,
           color: theme.noticeTextDark,
           fontSize: 12,
+          cursor: 'pointer',
+          ':hover': { backgroundColor: theme.noticeBackgroundLight },
         }}
         onEdit={onEdit}
         onSelect={onClick}
       >
-        <Text style={{ paddingRight: 5 }}>
-          {ruleCount > 0 ? (
-            <Trans count={ruleCount}>{{ count }} associated rules</Trans>
-          ) : (
-            <Trans>Create rule</Trans>
-          )}
-        </Text>
+        <PayeeRuleCountLabel count={ruleCount} style={{ paddingRight: 5 }} />
         <SvgArrowThinRight style={{ width: 8, height: 8 }} />
       </CellButton>
     </Cell>
@@ -84,7 +82,7 @@ type PayeeTableRowProps = {
     field: T,
     value: PayeeEntity[T],
   ) => void;
-  onDelete: (id: PayeeEntity['id']) => void;
+  onDelete: (ids: PayeeEntity['id'][]) => void;
   onViewRules: (id: PayeeEntity['id']) => void;
   onCreateRule: (id: PayeeEntity['id']) => void;
   style?: CSSProperties;
@@ -108,6 +106,13 @@ export const PayeeTableRow = memo(
   }: PayeeTableRowProps) => {
     const { id } = payee;
     const dispatchSelected = useSelectedDispatch();
+    const selectedItems = useSelectedItems();
+    const selectedIds = useMemo(() => {
+      const ids =
+        selectedItems && selectedItems.size > 0 ? selectedItems : [payee.id];
+      return Array.from(new Set(ids));
+    }, [payee, selectedItems]);
+
     const borderColor = selected
       ? theme.tableBorderSelected
       : theme.tableBorder;
@@ -118,8 +123,49 @@ export const PayeeTableRow = memo(
     const { t } = useTranslation();
 
     const triggerRef = useRef(null);
-    const { setMenuOpen, menuOpen, handleContextMenu, position } =
-      useContextMenu();
+    useContextMenu({
+      triggerRef,
+      items: [
+        {
+          name: 'delete',
+          text: t('Delete'),
+          onClick: () => onDelete(selectedIds),
+          hidden: payee.transfer_acct != null,
+        },
+        {
+          name: 'favorite',
+          text: payee.favorite ? t('Unfavorite') : t('Favorite'),
+          onClick: () =>
+            selectedIds.forEach(id =>
+              onUpdate(id, 'favorite', !payee.favorite),
+            ),
+          hidden: payee.transfer_acct != null,
+        },
+        {
+          name: 'view-rules',
+          text: t('View rules'),
+          onClick: () => onViewRules(id),
+          hidden: !ruleCount,
+        },
+        {
+          name: 'create-rule',
+          text: t('Create rule'),
+          onClick: () => onCreateRule(id),
+          hidden: selectedIds.length !== 1,
+        },
+        {
+          name: 'learn',
+          text: payee.learn_categories
+            ? t('Disable learning')
+            : t('Enable learning'),
+          onClick: () =>
+            selectedIds.forEach(id =>
+              onUpdate(id, 'learn_categories', !payee.learn_categories),
+            ),
+          hidden: !isLearnCategoriesEnabled,
+        },
+      ],
+    });
 
     return (
       <Row
@@ -142,65 +188,7 @@ export const PayeeTableRow = memo(
         }}
         data-focus-key={payee.id}
         onMouseEnter={() => onHover && onHover(payee.id)}
-        onContextMenu={handleContextMenu}
       >
-        <Popover
-          triggerRef={triggerRef}
-          placement="bottom start"
-          isOpen={menuOpen}
-          onOpenChange={() => setMenuOpen(false)}
-          {...position}
-          style={{ width: 200, margin: 1 }}
-          isNonModal
-        >
-          <Menu
-            items={[
-              payee.transfer_acct == null && {
-                name: 'delete',
-                text: t('Delete'),
-              },
-              payee.transfer_acct == null && {
-                name: 'favorite',
-                text: payee.favorite ? t('Unfavorite') : t('Favorite'),
-              },
-              ruleCount > 0 && { name: 'view-rules', text: t('View rules') },
-              { name: 'create-rule', text: t('Create rule') },
-              isLearnCategoriesEnabled &&
-                (payee.learn_categories
-                  ? {
-                      name: 'learn',
-                      text: t('Disable learning'),
-                    }
-                  : { name: 'learn', text: t('Enable learning') }),
-            ]}
-            onMenuSelect={name => {
-              switch (name) {
-                case 'delete':
-                  onDelete(id);
-                  break;
-                case 'favorite':
-                  onUpdate(id, 'favorite', payee.favorite ? 0 : 1);
-                  break;
-                case 'learn':
-                  onUpdate(
-                    id,
-                    'learn_categories',
-                    payee.learn_categories ? 0 : 1,
-                  );
-                  break;
-                case 'view-rules':
-                  onViewRules(id);
-                  break;
-                case 'create-rule':
-                  onCreateRule(id);
-                  break;
-                default:
-                  throw new Error(`Unrecognized menu option: ${name}`);
-              }
-              setMenuOpen(false);
-            }}
-          />
-        </Popover>
         <SelectCell
           exposed={
             payee.transfer_acct == null && (hovered || selected || editing)
@@ -221,9 +209,6 @@ export const PayeeTableRow = memo(
         <CustomCell
           width={20}
           exposed={!payee.transfer_acct}
-          onBlur={() => {}}
-          onUpdate={() => {}}
-          onClick={() => {}}
           style={{
             display: 'flex',
             justifyContent: 'center',

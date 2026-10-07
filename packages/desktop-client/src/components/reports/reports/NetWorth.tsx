@@ -1,45 +1,59 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 
+import { Button } from '@actual-app/components/button';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { SvgCalendar, SvgChart } from '@actual-app/components/icons/v1';
+import { Menu } from '@actual-app/components/menu';
+import { Paragraph } from '@actual-app/components/paragraph';
+import { Popover } from '@actual-app/components/popover';
+import { styles } from '@actual-app/components/styles';
+import { theme } from '@actual-app/components/theme';
+import { View } from '@actual-app/components/view';
+import { send } from '@actual-app/core/platform/client/connection';
+import * as monthUtils from '@actual-app/core/shared/months';
+import type { NetWorthWidget, TimeFrame } from '@actual-app/core/types/models';
 import * as d from 'date-fns';
 
-import { addNotification } from 'loot-core/src/client/actions';
-import { useWidget } from 'loot-core/src/client/data-hooks/widget';
-import { send } from 'loot-core/src/platform/client/fetch';
-import * as monthUtils from 'loot-core/src/shared/months';
-import { integerToCurrency } from 'loot-core/src/shared/util';
-import { type TimeFrame, type NetWorthWidget } from 'loot-core/types/models';
-
-import { useAccounts } from '../../../hooks/useAccounts';
-import { useFilters } from '../../../hooks/useFilters';
-import { useNavigate } from '../../../hooks/useNavigate';
-import { useSyncedPref } from '../../../hooks/useSyncedPref';
-import { useDispatch } from '../../../redux';
-import { theme, styles } from '../../../style';
-import { Button } from '../../common/Button2';
-import { Paragraph } from '../../common/Paragraph';
-import { View } from '../../common/View';
-import { EditablePageHeaderTitle } from '../../EditablePageHeaderTitle';
-import { MobileBackButton } from '../../mobile/MobileBackButton';
-import { MobilePageHeader, Page, PageHeader } from '../../Page';
-import { PrivacyFilter } from '../../PrivacyFilter';
-import { useResponsive } from '../../responsive/ResponsiveProvider';
-import { Change } from '../Change';
-import { NetWorthGraph } from '../graphs/NetWorthGraph';
-import { Header } from '../Header';
-import { LoadingIndicator } from '../LoadingIndicator';
-import { calculateTimeRange } from '../reportRanges';
-import { createSpreadsheet as netWorthSpreadsheet } from '../spreadsheets/net-worth-spreadsheet';
-import { useReport } from '../useReport';
-import { fromDateRepr } from '../util';
+import { EditablePageHeaderTitle } from '#components/EditablePageHeaderTitle';
+import { FinancialText } from '#components/FinancialText';
+import { MobileBackButton } from '#components/mobile/MobileBackButton';
+import { MobilePageHeader, Page, PageHeader } from '#components/Page';
+import { PrivacyFilter } from '#components/PrivacyFilter';
+import { Change } from '#components/reports/Change';
+import { NetWorthGraph } from '#components/reports/graphs/NetWorthGraph';
+import { Header } from '#components/reports/Header';
+import { LoadingIndicator } from '#components/reports/LoadingIndicator';
+import { ReportOptions } from '#components/reports/ReportOptions';
+import { calculateTimeRange } from '#components/reports/reportRanges';
+import { createSpreadsheet as netWorthSpreadsheet } from '#components/reports/spreadsheets/net-worth-spreadsheet';
+import { useReport } from '#components/reports/useReport';
+import { fromDateRepr } from '#components/reports/util';
+import { useAccounts } from '#hooks/useAccounts';
+import { useDashboardWidget } from '#hooks/useDashboardWidget';
+import { useDateFormat } from '#hooks/useDateFormat';
+import { useFormat } from '#hooks/useFormat';
+import { useLocale } from '#hooks/useLocale';
+import { useNavigate } from '#hooks/useNavigate';
+import { useRuleConditionFilters } from '#hooks/useRuleConditionFilters';
+import { useSyncedPref } from '#hooks/useSyncedPref';
+import { addNotification } from '#notifications/notificationsSlice';
+import { useDispatch } from '#redux';
+import { useUpdateDashboardWidgetMutation } from '#reports/mutations';
 
 export function NetWorth() {
   const params = useParams();
-  const { data: widget, isLoading } = useWidget<NetWorthWidget>(
-    params.id ?? '',
-    'net-worth-card',
-  );
+  const { data: widget, isLoading } = useDashboardWidget<NetWorthWidget>({
+    id: params.id,
+    type: 'net-worth-card',
+  });
 
   if (isLoading) {
     return <LoadingIndicator />;
@@ -53,10 +67,22 @@ type NetWorthInnerProps = {
 };
 
 function NetWorthInner({ widget }: NetWorthInnerProps) {
+  const locale = useLocale();
   const dispatch = useDispatch();
   const { t } = useTranslation();
+  const format = useFormat();
 
-  const accounts = useAccounts();
+  const getDefaultIntervalForMode = useCallback(
+    (mode: TimeFrame['mode']): 'Daily' | 'Weekly' | 'Monthly' | 'Yearly' => {
+      if (mode === 'lastMonth') {
+        return 'Weekly'; // For a single month, weekly interval provides better granularity than a single monthly data point
+      }
+      return 'Monthly';
+    },
+    [],
+  );
+
+  const { data: accounts = [] } = useAccounts();
   const {
     conditions,
     conditionsOp,
@@ -64,83 +90,178 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
     onDelete: onDeleteFilter,
     onUpdate: onUpdateFilter,
     onConditionsOpChange,
-  } = useFilters(widget?.meta?.conditions, widget?.meta?.conditionsOp);
+  } = useRuleConditionFilters(
+    widget?.meta?.conditions,
+    widget?.meta?.conditionsOp,
+  );
 
   const [allMonths, setAllMonths] = useState<Array<{
     name: string;
     pretty: string;
   }> | null>(null);
 
-  const [initialStart, initialEnd, initialMode] = calculateTimeRange(
-    widget?.meta?.timeFrame,
+  const [start, setStart] = useState(monthUtils.currentMonth());
+  const [end, setEnd] = useState(monthUtils.currentMonth());
+  const [mode, setMode] = useState<TimeFrame['mode']>('sliding-window');
+  const [interval, setInterval] = useState(
+    widget?.meta?.interval || getDefaultIntervalForMode(mode),
   );
-  const [start, setStart] = useState(initialStart);
-  const [end, setEnd] = useState(initialEnd);
-  const [mode, setMode] = useState(initialMode);
+  const [graphMode, setGraphMode] = useState<'trend' | 'stacked'>(
+    widget?.meta?.mode || 'trend',
+  );
+  // Combined setter: set mode and update interval (unless interval was set in widget meta)
+  const setModeAndInterval = useCallback(
+    (newMode: TimeFrame['mode']) => {
+      setMode(newMode);
+      if (!widget?.meta?.interval) {
+        setInterval(getDefaultIntervalForMode(newMode));
+      }
+    },
+    [widget?.meta?.interval, getDefaultIntervalForMode],
+  );
+
+  const [latestTransaction, setLatestTransaction] = useState('');
+
+  const [_firstDayOfWeekIdx] = useSyncedPref('firstDayOfWeekIdx');
+  const firstDayOfWeekIdx = _firstDayOfWeekIdx || '0';
+  const dateFormat = useDateFormat() || 'MM/dd/yyyy';
 
   const reportParams = useMemo(
-    () => netWorthSpreadsheet(start, end, accounts, conditions, conditionsOp),
-    [start, end, accounts, conditions, conditionsOp],
+    () =>
+      netWorthSpreadsheet(
+        start,
+        end,
+        accounts,
+        conditions,
+        conditionsOp,
+        locale,
+        interval,
+        firstDayOfWeekIdx,
+        format,
+        dateFormat,
+      ),
+    [
+      start,
+      end,
+      accounts,
+      conditions,
+      conditionsOp,
+      locale,
+      interval,
+      firstDayOfWeekIdx,
+      format,
+      dateFormat,
+    ],
   );
   const data = useReport('net_worth', reportParams);
   useEffect(() => {
     async function run() {
-      const trans = await send('get-earliest-transaction');
+      const earliestTransaction = await send('get-earliest-transaction');
+      setEarliestTransaction(
+        earliestTransaction
+          ? earliestTransaction.date
+          : monthUtils.currentDay(),
+      );
+
+      const latestTransaction = await send('get-latest-transaction');
+      setLatestTransaction(
+        latestTransaction ? latestTransaction.date : monthUtils.currentDay(),
+      );
+
       const currentMonth = monthUtils.currentMonth();
-      let earliestMonth = trans
-        ? monthUtils.monthFromDate(d.parseISO(fromDateRepr(trans.date)))
+      let earliestMonth = earliestTransaction
+        ? monthUtils.monthFromDate(
+            d.parseISO(fromDateRepr(earliestTransaction.date)),
+          )
         : currentMonth;
+      const latestTransactionMonth = latestTransaction
+        ? monthUtils.monthFromDate(
+            d.parseISO(fromDateRepr(latestTransaction.date)),
+          )
+        : currentMonth;
+
+      const latestMonth =
+        latestTransactionMonth > currentMonth
+          ? latestTransactionMonth
+          : currentMonth;
 
       // Make sure the month selects are at least populates with a
       // year's worth of months. We can undo this when we have fancier
       // date selects.
-      const yearAgo = monthUtils.subMonths(monthUtils.currentMonth(), 12);
+      const yearAgo = monthUtils.subMonths(latestMonth, 12);
       if (earliestMonth > yearAgo) {
         earliestMonth = yearAgo;
       }
 
       const allMonths = monthUtils
-        .rangeInclusive(earliestMonth, monthUtils.currentMonth())
+        .rangeInclusive(earliestMonth, latestMonth)
         .map(month => ({
           name: month,
-          pretty: monthUtils.format(month, 'MMMM, yyyy'),
+          pretty: monthUtils.format(month, 'MMMM yyyy', locale),
         }))
         .reverse();
 
       setAllMonths(allMonths);
     }
-    run();
-  }, []);
+    void run();
+  }, [locale]);
+
+  useEffect(() => {
+    if (latestTransaction) {
+      const [initialStart, initialEnd, initialMode] = calculateTimeRange(
+        widget?.meta?.timeFrame,
+        undefined,
+        latestTransaction,
+      );
+      setStart(initialStart);
+      setEnd(initialEnd);
+      setModeAndInterval(initialMode);
+    }
+  }, [latestTransaction, widget?.meta?.timeFrame, setModeAndInterval]);
 
   function onChangeDates(start: string, end: string, mode: TimeFrame['mode']) {
     setStart(start);
     setEnd(end);
-    setMode(mode);
+    setModeAndInterval(mode);
   }
+
+  const updateDashboardWidgetMutation = useUpdateDashboardWidgetMutation();
 
   async function onSaveWidget() {
     if (!widget) {
       throw new Error('No widget that could be saved.');
     }
 
-    await send('dashboard-update-widget', {
-      id: widget.id,
-      meta: {
-        ...(widget.meta ?? {}),
-        conditions,
-        conditionsOp,
-        timeFrame: {
-          start,
-          end,
-          mode,
+    updateDashboardWidgetMutation.mutate(
+      {
+        widget: {
+          id: widget.id,
+          meta: {
+            ...(widget.meta ?? {}),
+            conditions,
+            conditionsOp,
+            interval,
+            mode: graphMode,
+            timeFrame: {
+              start,
+              end,
+              mode,
+            },
+          },
         },
       },
-    });
-    dispatch(
-      addNotification({
-        type: 'message',
-        message: t('Dashboard widget successfully saved.'),
-      }),
+      {
+        onSuccess: () => {
+          dispatch(
+            addNotification({
+              notification: {
+                type: 'message',
+                message: t('Dashboard widget successfully saved.'),
+              },
+            }),
+          );
+        },
+      },
     );
   }
 
@@ -154,18 +275,18 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
     }
 
     const name = newName || t('Net Worth');
-    await send('dashboard-update-widget', {
-      id: widget.id,
-      meta: {
-        ...(widget.meta ?? {}),
-        name,
+    updateDashboardWidgetMutation.mutate({
+      widget: {
+        id: widget.id,
+        meta: {
+          ...(widget.meta ?? {}),
+          name,
+        },
       },
     });
   };
 
-  const [earliestTransaction, _] = useState('');
-  const [_firstDayOfWeekIdx] = useSyncedPref('firstDayOfWeekIdx');
-  const firstDayOfWeekIdx = _firstDayOfWeekIdx || '0';
+  const [earliestTransaction, setEarliestTransaction] = useState('');
 
   if (!allMonths || !data) {
     return null;
@@ -203,7 +324,9 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
         start={start}
         end={end}
         earliestTransaction={earliestTransaction}
+        latestTransaction={latestTransaction}
         firstDayOfWeekIdx={firstDayOfWeekIdx}
+        granularities={['month', 'day']}
         mode={mode}
         onChangeDates={onChangeDates}
         filters={conditions}
@@ -212,6 +335,12 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
         onDeleteFilter={onDeleteFilter}
         conditionsOp={conditionsOp}
         onConditionsOpChange={onConditionsOpChange}
+        inlineContent={
+          <>
+            <IntervalSelector interval={interval} onChange={setInterval} />
+            <ModeSelector mode={graphMode} onChange={setGraphMode} />
+          </>
+        }
       >
         {widget && (
           <Button variant="primary" onPress={onSaveWidget}>
@@ -238,7 +367,11 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
           <View
             style={{ ...styles.largeText, fontWeight: 400, marginBottom: 5 }}
           >
-            <PrivacyFilter>{integerToCurrency(data.netWorth)}</PrivacyFilter>
+            <PrivacyFilter>
+              <FinancialText>
+                {format(data.netWorth, 'financial')}
+              </FinancialText>
+            </PrivacyFilter>
           </View>
           <PrivacyFilter>
             <Change amount={data.totalChange} />
@@ -247,7 +380,10 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
 
         <NetWorthGraph
           graphData={data.graphData}
+          accounts={data.accounts}
           showTooltip={!isNarrowWidth}
+          interval={interval}
+          mode={graphMode}
         />
 
         <View style={{ marginTop: 30, userSelect: 'none' }}>
@@ -259,8 +395,8 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
           <Paragraph>
             <Trans>
               Net worth shows the balance of all accounts over time, including
-              all of your investments. Your “net worth” is considered to be the
-              amount you’d have if you sold all your assets and paid off as much
+              all of your investments. Your "net worth" is considered to be the
+              amount you'd have if you sold all your assets and paid off as much
               debt as possible. If you hover over the graph, you can also see
               the amount of assets and debt individually.
             </Trans>
@@ -268,5 +404,108 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
         </View>
       </View>
     </Page>
+  );
+}
+
+// Interval selector component with icon-only trigger similar to filter button
+function IntervalSelector({
+  interval,
+  onChange,
+}: {
+  interval: 'Daily' | 'Weekly' | 'Monthly' | 'Yearly';
+  onChange: (val: 'Daily' | 'Weekly' | 'Monthly' | 'Yearly') => void;
+}) {
+  const { t } = useTranslation();
+
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+
+  const currentLabel =
+    ReportOptions.interval.find(opt => opt.key === interval)?.description ??
+    interval;
+
+  return (
+    <>
+      <Button
+        ref={triggerRef}
+        variant="bare"
+        onPress={() => setIsOpen(true)}
+        aria-label={t('Change interval')}
+      >
+        <SvgCalendar style={{ width: 12, height: 12 }} />
+        <span style={{ marginLeft: 5 }}>{currentLabel}</span>
+      </Button>
+
+      <Popover
+        triggerRef={triggerRef}
+        placement="bottom start"
+        isOpen={isOpen}
+        onOpenChange={() => setIsOpen(false)}
+      >
+        <Menu
+          onMenuSelect={item => {
+            onChange(item as 'Daily' | 'Weekly' | 'Monthly' | 'Yearly');
+            setIsOpen(false);
+          }}
+          items={ReportOptions.interval.map(({ key, description }) => ({
+            name: key as 'Daily' | 'Weekly' | 'Monthly' | 'Yearly',
+            text: description,
+          }))}
+        />
+      </Popover>
+    </>
+  );
+}
+
+function ModeSelector({
+  mode,
+  onChange,
+}: {
+  mode: 'trend' | 'stacked';
+  onChange: (val: 'trend' | 'stacked') => void;
+}) {
+  const { t } = useTranslation();
+
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+
+  const options = [
+    { key: 'trend', description: t('Trend') },
+    { key: 'stacked', description: t('Stacked') },
+  ];
+
+  const currentLabel =
+    options.find(opt => opt.key === mode)?.description ?? mode;
+
+  return (
+    <>
+      <Button
+        ref={triggerRef}
+        variant="bare"
+        onPress={() => setIsOpen(true)}
+        aria-label={t('Change mode')}
+      >
+        <SvgChart style={{ width: 12, height: 12 }} />
+        <span style={{ marginLeft: 5 }}>{currentLabel}</span>
+      </Button>
+
+      <Popover
+        triggerRef={triggerRef}
+        placement="bottom start"
+        isOpen={isOpen}
+        onOpenChange={() => setIsOpen(false)}
+      >
+        <Menu
+          onMenuSelect={item => {
+            onChange(item as 'trend' | 'stacked');
+            setIsOpen(false);
+          }}
+          items={options.map(({ key, description }) => ({
+            name: key,
+            text: description,
+          }))}
+        />
+      </Popover>
+    </>
   );
 }

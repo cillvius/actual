@@ -1,16 +1,10 @@
 // @ts-strict-ignore
-import React, {
-  createContext,
-  useState,
-  useContext,
-  useMemo,
-  type ReactNode,
-  type Dispatch,
-  type SetStateAction,
-} from 'react';
+import React, { createContext, useContext, useMemo, useState } from 'react';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 
-import { useGlobalPref } from '../../hooks/useGlobalPref';
-import { useResponsive } from '../responsive/ResponsiveProvider';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+
+import { useGlobalPref } from '#hooks/useGlobalPref';
 
 type SidebarContextValue = {
   hidden: boolean;

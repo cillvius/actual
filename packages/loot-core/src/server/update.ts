@@ -1,7 +1,7 @@
 // @ts-strict-ignore
-import md5 from 'md5';
+import { createHash } from 'node:crypto';
 
-import { schema, schemaConfig, makeViews } from './aql';
+import { makeViews, schema, schemaConfig } from './aql';
 import * as db from './db';
 import * as migrations from './migrate/migrations';
 
@@ -13,20 +13,21 @@ async function runMigrations() {
 
 async function updateViews() {
   const hashKey = 'view-hash';
-  const row = await db.first('SELECT value FROM __meta__ WHERE key = ?', [
-    hashKey,
-  ]);
+  const row = await db.first<{ value: string }>(
+    'SELECT value FROM __meta__ WHERE key = ?',
+    [hashKey],
+  );
   const { value: hash } = row || {};
 
   const views = makeViews(schema, schemaConfig);
-  const currentHash = md5(views);
+  const currentHash = createHash('md5').update(views).digest('hex');
 
   if (hash !== currentHash) {
-    await db.execQuery(views);
-    await db.runQuery(
-      'INSERT OR REPLACE INTO __meta__ (key, value) VALUES (?, ?)',
-      [hashKey, currentHash],
-    );
+    db.execQuery(views);
+    db.runQuery('INSERT OR REPLACE INTO __meta__ (key, value) VALUES (?, ?)', [
+      hashKey,
+      currentHash,
+    ]);
   }
 }
 
